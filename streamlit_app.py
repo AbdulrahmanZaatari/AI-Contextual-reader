@@ -1,3 +1,21 @@
+import os
+from pathlib import Path
+
+# Use Streamlit's persistent storage
+if "STREAMLIT_SCRIPT_RUN_CONTEXT" in os.environ:
+    # Running on Streamlit Cloud
+    DATA_DIR = Path.home() / ".streamlit_data"
+else:
+    # Running locally
+    DATA_DIR = Path(".")
+
+DATA_DIR.mkdir(exist_ok=True)
+
+# Update these paths
+BOOK_DIR = DATA_DIR / "books_library"
+BOOK_DIR.mkdir(exist_ok=True)
+DB_PATH = DATA_DIR / "user_data.db"
+
 import streamlit as st
 from PIL import Image
 import fitz  # PyMuPDF
