@@ -676,7 +676,7 @@ def cache_page(username, book_name, page_number, extracted_text, extraction_meth
 
 # --- GEMINI API ---
 try:
-    API_KEY = st.secrets["google_api_key"]
+    API_KEY = st.secrets["gemini_api_key"]
     client = genai.Client(api_key=API_KEY)
 except KeyError:
     st.error("API key not found")
