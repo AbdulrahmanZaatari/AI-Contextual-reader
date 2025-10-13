@@ -890,16 +890,53 @@ st.components.v1.html("""
 <script>
     let touchStartX = 0;
     let touchEndX = 0;
+    const threshold = 80; // Swipe distance threshold in pixels
     
-    // --- Mobile Swipe Logic ---
-    document.addEventListener('touchstart', e => touchStartX = e.changedTouches[0].screenX, false);
-    document.addEventListener('touchend', e => {
-        touchEndX = e.changedTouches[0].screenX;
-        handleSwipe();
-    }, false);
+    function handleSwipe() {
+        const diff = touchStartX - touchEndX;
+        if (Math.abs(diff) > threshold) {
+            // Must target the buttons in the parent (Streamlit main app) document
+            const buttons = window.parent.document.querySelectorAll('button');
+            
+            if (diff > 0) { // Swiped left: Go to Next Page
+                for (let btn of buttons) {
+                    // Check button text and if it's not disabled
+                    if (btn.textContent === 'Next ▶' && !btn.disabled) {
+                        btn.click();
+                        break;
+                    }
+                }
+            } else { // Swiped right: Go to Previous Page
+                for (let btn of buttons) {
+                    // Check button text and if it's not disabled
+                    if (btn.textContent === '◀ Previous' && !btn.disabled) {
+                        btn.click();
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
+    // --- Key Change: Attach listeners to the parent window's document ---
+    // The current script runs inside an iframe, so we listen on the parent.
+    window.parent.document.addEventListener('touchstart', e => {
+        // Only track single touches for swipe
+        if (e.touches.length === 1) {
+            touchStartX = e.touches[0].screenX;
+        }
+    }, {passive: true});
+
+    window.parent.document.addEventListener('touchend', e => {
+        if (e.changedTouches.length === 1) {
+            touchEndX = e.changedTouches[0].screenX;
+            handleSwipe();
+        }
+    }, {passive: true});
+
+    // Existing Keyboard Logic (already working correctly by using window.parent.document)
     window.parent.document.addEventListener('keydown', function(e) {
-        // Prevent action if user is typing in an input field
+        // ... (your existing ArrowKey logic) ...
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
             return;
         }
@@ -921,29 +958,6 @@ st.components.v1.html("""
             }
         }
     });
-
-    function handleSwipe() {
-        const threshold = 80;
-        const diff = touchStartX - touchEndX;
-        if (Math.abs(diff) > threshold) {
-            const buttons = window.parent.document.querySelectorAll('button');
-            if (diff > 0) { // Swiped left for "Next"
-                for (let btn of buttons) {
-                    if (btn.textContent === 'Next ▶' && !btn.disabled) {
-                        btn.click();
-                        break;
-                    }
-                }
-            } else { // Swiped right for "Previous"
-                for (let btn of buttons) {
-                    if (btn.textContent === '◀ Previous' && !btn.disabled) {
-                        btn.click();
-                        break;
-                    }
-                }
-            }
-        }
-    }
 </script>
 """, height=0)
 
