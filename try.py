@@ -783,7 +783,7 @@ def extract_text_with_gemini_vision(image, client):
 Text:"""
         
         response = client.models.generate_content(
-            model='gemini-2.0-flash-exp',
+            model='gemini-2.5-flash',
             contents=[prompt, image_part]
         )
         
@@ -902,7 +902,7 @@ def get_gemini_explanation_stream(client, text_snippet, prompt_value="explain"):
     
     try:
         response = client.models.generate_content_stream(
-            model='gemini-2.0-flash-exp',
+            model='gemini-2.5-flash',
             contents=prompt
         )
         # For history saving, we return the final constructed prompt and the response stream
@@ -1533,7 +1533,7 @@ else:
                                     
                                     # Call Gemini API directly (since this is custom logic)
                                     response_stream = client.models.generate_content_stream(
-                                        model='gemini-2.0-flash-exp',
+                                        model='gemini-2.5-flash',
                                         contents=prompt
                                     )
                                     
@@ -1579,7 +1579,7 @@ else:
                                 prompt = f"Text: '{analysis_text}'\n\nQuestion: {custom_q}\n\nAnswer:"
                             
                             response_stream = client.models.generate_content_stream(
-                                model='gemini-2.0-flash-exp',
+                                model='gemini-2.5-flash',
                                 contents=prompt
                             )
                             
@@ -1715,4 +1715,4 @@ else:
             st.info("No history yet. Start analyzing text to build your history!")
 
 st.markdown("---")
-st.markdown("<div style='text-align: center; color: #64748b; font-size: 0.9rem;'>Built with Gemini 2.0 Flash | Swipe to navigate on mobile</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; color: #64748b; font-size: 0.9rem;'>Built with Gemini 2.5 Flash | Swipe to navigate on mobile</div>", unsafe_allow_html=True)
