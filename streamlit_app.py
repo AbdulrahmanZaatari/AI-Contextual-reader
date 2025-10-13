@@ -450,10 +450,23 @@ def init_database():
                   created_at TEXT NOT NULL,
                   UNIQUE(username, book_name, page_number))''')
     
+    c.execute('''CREATE TABLE IF NOT EXISTS custom_prompts
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            prompt_name TEXT NOT NULL,
+            prompt_template TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(username, prompt_name))''')
+    
     conn.commit()
     conn.close()
 
 init_database()
+
+def get_db_connection():
+    """Returns an active SQLite connection object."""
+    # This function is crucial to define and use consistently.
+    return sqlite3.connect(DB_PATH)
 
 # --- SESSION MANAGEMENT ---
 def hash_password(password):
@@ -560,6 +573,73 @@ def is_bookmarked(username, book_name, page_number):
     result = c.fetchone()
     conn.close()
     return result is not None
+
+def save_custom_prompt(username, name, template):
+    """Saves a new custom prompt to the database."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    created_at = datetime.now().isoformat()
+    
+    try:
+        c.execute('''INSERT INTO custom_prompts 
+                     (username, prompt_name, prompt_template, created_at) 
+                     VALUES (?, ?, ?, ?)''', 
+                  (username, name.strip(), template.strip(), created_at))
+        conn.commit()
+        return (True, f"Prompt '{name}' saved successfully!")
+    except sqlite3.IntegrityError:
+        return (False, f"Error: A prompt named '{name}' already exists.")
+    except Exception as e:
+        return (False, f"Database Error: {e}")
+    finally:
+        conn.close()
+
+def get_custom_prompts(username):
+    """Retrieves all custom prompts for a user."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''SELECT id, prompt_name, prompt_template 
+                 FROM custom_prompts 
+                 WHERE username = ? 
+                 ORDER BY created_at DESC''', (username,))
+    prompts = c.fetchall()
+    conn.close()
+    # Returns list of tuples: [(id, name, template), ...]
+    return prompts
+
+def delete_custom_prompt(prompt_id):
+    """Deletes a custom prompt by its ID."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('DELETE FROM custom_prompts WHERE id = ?', (prompt_id,))
+    conn.commit()
+    conn.close()
+
+# --- MODIFIED UTILITY FUNCTION to combine fixed and custom prompts ---
+
+def get_all_prompts(username):
+    """Combines hardcoded actions and user's custom prompts."""
+    # 1. Base set of quick actions (type is the prompt_key)
+    base_actions = {
+        "Translate": "translate",
+        "Explain": "explain",
+        "ELI5": "eli5",
+        "Historical": "historical",
+        "Summary": "summary",
+        "Compare": "compare",
+        "Themes": "themes",
+        "Cite": "cite"
+    }
+    
+    # 2. Get custom prompts and add them
+    custom_prompts = get_custom_prompts(username) 
+    
+    # Custom prompts use their name as the key, and their ID as the value/type
+    # The generation logic will use this ID to look up the template later.
+    for prompt_id, name, _ in custom_prompts:
+        base_actions[name] = f"custom_{prompt_id}"
+        
+    return base_actions
 
 # --- BOOK METADATA ---
 def get_display_name(username, filename):
@@ -783,7 +863,14 @@ def get_extraction_status(username, book_name, page_number):
         return "cached", cached_method
     return "extracting", None
 
-def get_gemini_explanation_stream(client, text_snippet, prompt_type="explain"):
+# NEW FUNCTION (get_gemini_explanation_stream)
+def get_gemini_explanation_stream(client, text_snippet, prompt_value="explain"):
+    """
+    Generates a streaming response from the Gemini API, supporting both 
+    static keys and custom prompt IDs.
+    """
+    
+    # 1. Static Prompt Templates
     prompt_templates = {
         "translate": f"Translate to English and explain.\n\nText: {text_snippet}",
         "explain": f"Analyze and explain clearly.\n\nText: {text_snippet}",
@@ -795,16 +882,52 @@ def get_gemini_explanation_stream(client, text_snippet, prompt_type="explain"):
         "cite": f"Citation-worthy insights.\n\nText: {text_snippet}"
     }
     
-    prompt = prompt_templates.get(prompt_type, prompt_templates["explain"])
+    prompt = None
+    
+    # A. Handle Custom Prompts (Key is "custom_ID")
+    if isinstance(prompt_value, str) and prompt_value.startswith("custom_"):
+        try:
+            prompt_id = int(prompt_value.split("_")[1])
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            # Retrieve the template from the database
+            c.execute("SELECT prompt_template FROM custom_prompts WHERE id=?", (prompt_id,))
+            result = c.fetchone()
+            conn.close()
+            
+            if result:
+                # Inject the text snippet into the custom template using the placeholder
+                prompt_template = result[0]
+                prompt = prompt_template.replace("{{text_snippet}}", text_snippet).strip()
+                
+        except Exception as e:
+            # Fallback for corrupted custom ID
+            print(f"Error retrieving custom prompt: {e}")
+            prompt = prompt_templates["explain"]
+            
+    # B. Handle Static Prompts (Key is "explain", "eli5", etc.)
+    elif prompt_value in prompt_templates:
+        prompt = prompt_templates[prompt_value]
+        
+    # C. Handle Custom Question (The actual question text)
+    else:
+        # If prompt_value is the actual question text typed by the user
+        prompt = f"{prompt_value}\n\nText to analyze:\n{text_snippet}"
+        
+    # Final check: Fallback if everything fails
+    if not prompt:
+        prompt = prompt_templates["explain"]
     
     try:
         response = client.models.generate_content_stream(
             model='gemini-2.0-flash-exp',
             contents=prompt
         )
-        return response
-    except:
-        return None
+        # For history saving, we return the final constructed prompt and the response stream
+        return prompt, response
+    except Exception as e:
+        print(f"Gemini API Error: {e}")
+        return prompt, None
     
 def handle_page_jump():
     """Callback to handle page changes from the number_input widget."""
@@ -1315,99 +1438,189 @@ else:
                 with col_analysis:
                     st.subheader("Analysis")
             
-            # Analysis section
-            selected_text = st.text_area(
-                "Paste text:",
-                height=120,
-                placeholder="Paste text here to analyze...",
-                key="user_text_input"
-            )
-            
-            use_full_context = False
-            if st.session_state.multi_page_mode and st.session_state.context_text:
-                use_full_context = st.checkbox("Use all pages as context", value=True)
-            
-            if selected_text and selected_text.strip():
-                st.markdown(f"<div class='selected-text-box'>{selected_text.strip()[:100]}...</div>", unsafe_allow_html=True)
+            with col_analysis:
+                st.subheader("Analysis")
+    
+                # --- CUSTOM PROMPT MANAGER TRIGGER & UI (from previous step) ---
+                if st.button("🔧 Manage Custom Prompts", use_container_width=True, key="manage_prompts_btn"):
+                    # Toggle visibility
+                    st.session_state.show_prompt_manager = not st.session_state.get('show_prompt_manager', False)
+                    
+                # --- NEW: CUSTOM PROMPT MANAGER UI (Placeholders for actual implementation) ---
+                if st.session_state.get('show_prompt_manager', False):
+                    st.markdown("---")
+                    st.subheader("Custom Prompts Editor")
+
+                    # 1. CREATE NEW PROMPT FORM
+                    with st.form("new_prompt_form", clear_on_submit=True):
+                        st.markdown("#### ➕ Create New Prompt")
+                        new_prompt_name = st.text_input("Prompt Name (e.g., 'Summary for Notion')", max_chars=50)
+                        new_prompt_template = st.text_area(
+                            "Prompt Template",
+                            placeholder="Act as a professional technical writer. Summarize the following text into three detailed points. Text: {{text_snippet}}",
+                            height=150
+                        )
+                        submitted = st.form_submit_button("💾 Save Prompt")
+                        
+                        # --- DATABASE CALLS FOR SAVE ---
+                        if submitted and new_prompt_name and new_prompt_template:
+                            # Assuming save_custom_prompt is defined in your utilities
+                            success, message = save_custom_prompt(
+                                st.session_state.username, 
+                                new_prompt_name.strip(), 
+                                new_prompt_template.strip()
+                            )
+                            if success:
+                                st.success(message)
+                            else:
+                                st.warning(message)
+                            st.rerun() 
+
+                    st.info("Tip: Use `{{text_snippet}}` in your template to mark where the selected text will be inserted.")
+                    
+                    # 2. VIEW/DELETE PROMPTS LIST
+                    st.markdown("#### 🗑️ Your Saved Prompts")
+                    # Assuming get_custom_prompts is defined in your utilities
+                    custom_prompts_list = get_custom_prompts(st.session_state.username) 
+                    
+                    if custom_prompts_list:
+                        for prompt_id, name, template in custom_prompts_list:
+                            col_c1, col_c2 = st.columns([4, 1])
+                            with col_c1:
+                                with st.expander(f"**{name}**", expanded=False):
+                                    st.code(template, language="plaintext")
+                            with col_c2:
+                                if st.button("Delete", key=f"delete_btn_{prompt_id}", type="secondary", use_container_width=True):
+                                    # Assuming delete_custom_prompt is defined in your utilities
+                                    delete_custom_prompt(prompt_id) 
+                                    st.rerun() 
+                    else:
+                        st.caption("No custom prompts saved.")
+                    st.markdown("---") 
+                # --- END CUSTOM PROMPT MANAGER UI ---
+
+                selected_text = st.text_area(
+                    "Paste text:",
+                    height=120,
+                    placeholder="Paste text here to analyze...",
+                    key="user_text_input"
+                )
                 
-                st.markdown("**Quick Actions:**")
+                use_full_context = False
+                if st.session_state.multi_page_mode and st.session_state.context_text:
+                    use_full_context = st.checkbox("Use all pages as context", value=True)
                 
-                actions = {
-                    "Translate": "translate",
-                    "Explain": "explain",
-                    "ELI5": "eli5",
-                    "Historical": "historical",
-                    "Summary": "summary",
-                    "Compare": "compare",
-                    "Themes": "themes",
-                    "Cite": "cite"
-                }
-                
-                cols = st.columns(4)
-                for idx, (name, ptype) in enumerate(actions.items()):
-                    with cols[idx % 4]:
-                        if st.button(name, use_container_width=True, key=f"btn_{ptype}"):
+                if selected_text and selected_text.strip():
+                    st.markdown(f"<div class='selected-text-box'>{selected_text.strip()[:100]}...</div>", unsafe_allow_html=True)
+                    
+                    st.markdown("**Quick Actions & Custom Prompts:**")
+                    
+                    # Get all actions (built-in and custom from DB)
+                    # Assuming get_all_prompts is defined in your utilities
+                    actions = get_all_prompts(st.session_state.username) 
+
+                    # Re-fetch custom prompts list to look up template quickly if needed
+                    # Assuming get_custom_prompts is defined in your utilities
+                    custom_prompts_db = get_custom_prompts(st.session_state.username)
+                    custom_prompts_map = {f"custom_{id}": template for id, _, template in custom_prompts_db}
+
+                    cols = st.columns(4)
+                    for idx, (name, ptype) in enumerate(actions.items()):
+                        with cols[idx % 4]:
+                            if st.button(name, use_container_width=True, key=f"btn_{ptype}"):
+                                
+                                analysis_text = selected_text.strip()
+                                
+                                # --- CUSTOM PROMPT LOGIC (using database template) ---
+                                if ptype.startswith("custom_"):
+                                    
+                                    prompt_template = custom_prompts_map.get(ptype, "")
+                                    
+                                    if not prompt_template:
+                                        st.error("Error: Custom prompt template not found.")
+                                        continue
+                                    
+                                    # 1. Fill the template with the selected text
+                                    template_filled = prompt_template.replace('{{text_snippet}}', analysis_text)
+                                    
+                                    # 2. Apply multi-page context if enabled
+                                    if use_full_context and st.session_state.context_text:
+                                        prompt = f"CONTEXT:\n{st.session_state.context_text}\n\nUSER PROMPT:\n{template_filled}"
+                                    else:
+                                        prompt = template_filled
+                                    
+                                    # Call Gemini API directly (since this is custom logic)
+                                    response_stream = client.models.generate_content_stream(
+                                        model='gemini-2.0-flash-exp',
+                                        contents=prompt
+                                    )
+                                    
+                                # --- BUILT-IN ACTION LOGIC ---
+                                else:
+                                    # Use the existing function for built-in actions 
+                                    # Assuming get_gemini_explanation_stream is defined elsewhere
+                                    response_stream = get_gemini_explanation_stream(client, analysis_text, ptype)
+
+                                # --- STREAMING RESPONSE & HISTORY SAVE ---
+                                if response_stream:
+                                    placeholder = st.empty()
+                                    full_response = ""
+                                    
+                                    for chunk in response_stream:
+                                        if hasattr(chunk, 'text'):
+                                            full_response += chunk.text
+                                            placeholder.markdown(f"<div class='ai-explanation'><strong>{name}:</strong><br><br>{full_response}</div>", unsafe_allow_html=True)
+                                    
+                                    # Save to history
+                                    # Use the button name for both prompt_type and question for Quick Actions/Custom Prompts
+                                    # Assuming save_to_history is defined elsewhere
+                                    save_to_history(
+                                        st.session_state.username,
+                                        st.session_state.current_book,
+                                        st.session_state.current_page,
+                                        name, name, full_response, 
+                                        selected_text.strip()
+                                    )
+                                    st.success("Saved to history!")
+                    
+                    st.markdown("---")
+                    st.markdown("**Custom Question (Manual):**")
+                    
+                    custom_q = st.text_input("Ask anything about this text:", key="custom_q")
+                    
+                    if st.button("Get Answer", disabled=not custom_q, use_container_width=True):
+                        try:
                             analysis_text = selected_text.strip()
                             if use_full_context and st.session_state.context_text:
-                                analysis_text = f"CONTEXT:\n{st.session_state.context_text}\n\nFOCUS:\n{analysis_text}"
+                                prompt = f"CONTEXT:\n{st.session_state.context_text}\n\nFOCUS:\n{analysis_text}\n\nQUESTION: {custom_q}\n\nAnswer:"
+                            else:
+                                prompt = f"Text: '{analysis_text}'\n\nQuestion: {custom_q}\n\nAnswer:"
                             
-                            response_stream = get_gemini_explanation_stream(client, analysis_text, ptype)
+                            response_stream = client.models.generate_content_stream(
+                                model='gemini-2.0-flash-exp',
+                                contents=prompt
+                            )
                             
-                            if response_stream:
-                                placeholder = st.empty()
-                                full_response = ""
-                                
-                                for chunk in response_stream:
-                                    if hasattr(chunk, 'text'):
-                                        full_response += chunk.text
-                                        placeholder.markdown(f"<div class='ai-explanation'><strong>{name}:</strong><br><br>{full_response}</div>", unsafe_allow_html=True)
-                                
-                                save_to_history(
-                                    st.session_state.username,
-                                    st.session_state.current_book,
-                                    st.session_state.current_page,
-                                    name, name, full_response,
-                                    selected_text.strip()
-                                )
-                                st.success("Saved to history!")
-                
-                st.markdown("---")
-                st.markdown("**Custom Question:**")
-                
-                custom_q = st.text_input("Ask anything about this text:", key="custom_q")
-                
-                if st.button("Get Answer", disabled=not custom_q, use_container_width=True):
-                    try:
-                        analysis_text = selected_text.strip()
-                        if use_full_context and st.session_state.context_text:
-                            prompt = f"CONTEXT:\n{st.session_state.context_text}\n\nFOCUS:\n{analysis_text}\n\nQUESTION: {custom_q}\n\nAnswer:"
-                        else:
-                            prompt = f"Text: '{analysis_text}'\n\nQuestion: {custom_q}\n\nAnswer:"
-                        
-                        response_stream = client.models.generate_content_stream(
-                            model='gemini-2.0-flash-exp',
-                            contents=prompt
-                        )
-                        
-                        placeholder = st.empty()
-                        full_response = ""
-                        
-                        for chunk in response_stream:
-                            if hasattr(chunk, 'text'):
-                                full_response += chunk.text
-                                placeholder.markdown(f"<div class='ai-explanation'><strong>Answer:</strong><br><br>{full_response}</div>", unsafe_allow_html=True)
-                        
-                        save_to_history(
-                            st.session_state.username,
-                            st.session_state.current_book,
-                            st.session_state.current_page,
-                            "Custom Question",
-                            custom_q, full_response,
-                            selected_text.strip()
-                        )
-                        st.success("Saved to history!")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+                            placeholder = st.empty()
+                            full_response = ""
+                            
+                            for chunk in response_stream:
+                                if hasattr(chunk, 'text'):
+                                    full_response += chunk.text
+                                    placeholder.markdown(f"<div class='ai-explanation'><strong>Answer:</strong><br><br>{full_response}</div>", unsafe_allow_html=True)
+                            
+                            # Save to history for the manual question
+                            save_to_history(
+                                st.session_state.username,
+                                st.session_state.current_book,
+                                st.session_state.current_page,
+                                "Custom Question",
+                                custom_q, full_response,
+                                selected_text.strip()
+                            )
+                            st.success("Saved to history!")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
 
     # --- BOOKMARKS MODE ---
     elif st.session_state.view_mode == "bookmarks":
