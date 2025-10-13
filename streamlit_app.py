@@ -195,8 +195,10 @@ st.markdown("""
         user-select: text;
         cursor: text;
         white-space: pre-wrap;
-        pointer-events: auto;
-        z-index: 1;
+        word-wrap: break-word;
+        -webkit-user-select: text;
+        -moz-user-select: text;
+        -ms-user-select: text;
     }
     
     .context-badge {
@@ -264,53 +266,75 @@ st.markdown("""
         cursor: pointer;
     }
     
-    .page-nav-arrows {
-        position: fixed;
-        right: 20px;
-        top: 50%;
-        transform: translateY(-50%);
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        z-index: 999;
+    .extraction-status {
+        background: #fef3c7;
+        border-left: 4px solid #f59e0b;
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        font-size: 0.85rem;
+        color: #78350f;
+        display: inline-block;
+        margin: 0.5rem 0;
     }
     
-    .page-nav-arrows button {
-        width: 50px;
-        height: 50px;
-        border-radius: 50%;
-        background: #3b82f6;
-        color: white;
-        border: none;
-        font-size: 24px;
-        cursor: pointer;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        transition: all 0.2s;
-    }
-    
-    .page-nav-arrows button:hover {
-        background: #2563eb;
-        transform: scale(1.1);
-    }
-    
-    .page-nav-arrows button:disabled {
-        background: #cbd5e1;
-        cursor: not-allowed;
-        transform: scale(1);
-    }
-    
-    @media (max-width: 768px) {
-        .page-nav-arrows {
-            right: 10px;
+    /* Responsive Design */
+    @media (max-width: 1024px) {
+        .main {
+            padding: 0.5rem;
         }
         
-        .page-nav-arrows button {
-            width: 45px;
-            height: 45px;
-            font-size: 20px;
+        .book-title {
+            font-size: 1.4rem;
         }
         
         .extracted-text-area {
+            font-size: 1.1rem;
+            line-height: 2;
+        }
+    }
+    
+    @media (max-width: 768px) {
+        .book-title {
+            font-size: 1.2rem;
+        }
+        
+        .page-info {
+            font-size: 0.95rem;
+        }
+        
+        .extracted-text-area {
+            font-size: 1rem;
+            line-height: 1.8;
+            padding: 1rem;
+        }
+        
+        .selected-text-box {
+            font-size: 1.1rem;
+            line-height: 1.9;
+        }
+        
+        .ai-explanation {
+            font-size: 0.95rem;
+            padding: 1rem;
+        }
+        
+        .feature-card {
+            padding: 1rem;
+        }
+    }
+    
+    @media (max-width: 480px) {
+        .book-title {
+            font-size: 1rem;
+        }
+        
+        .extracted-text-area {
+            font-size: 0.95rem;
+            line-height: 1.7;
+            padding: 0.75rem;
+        }
+        
+        .selected-text-box {
             font-size: 1rem;
             line-height: 1.8;
         }
@@ -325,8 +349,6 @@ DB_PATH = Path("user_data.db")
 
 # --- DATABASE SETUP ---
 def init_database():
-    # Placeholder for connection logic
-    # Make sure DB_PATH is accessible (e.g., globally or passed in)
     try:
         conn = sqlite3.connect(DB_PATH)
     except NameError:
@@ -335,13 +357,11 @@ def init_database():
         
     c = conn.cursor()
     
-    # 1. users table (no migrations needed)
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (username TEXT PRIMARY KEY, 
                   password_hash TEXT NOT NULL,
                   created_at TEXT NOT NULL)''')
     
-    # 2. sessions table 
     c.execute("PRAGMA table_info(sessions)")
     columns = [column[1] for column in c.fetchall()]
     
@@ -352,7 +372,6 @@ def init_database():
                       created_at TEXT NOT NULL,
                       expires_at TEXT NOT NULL)''')
     
-    # 3. page_history table (existing migration logic for 'prompt_type' preserved)
     c.execute("PRAGMA table_info(page_history)")
     columns = [column[1] for column in c.fetchall()]
     
@@ -369,7 +388,6 @@ def init_database():
                       timestamp TEXT NOT NULL,
                       FOREIGN KEY (username) REFERENCES users(username))''')
     elif 'prompt_type' not in columns:
-        # Existing migration logic for 'prompt_type'
         c.execute('''CREATE TABLE page_history_new
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       username TEXT NOT NULL,
@@ -389,7 +407,6 @@ def init_database():
         c.execute('DROP TABLE page_history')
         c.execute('ALTER TABLE page_history_new RENAME TO page_history')
     
-    # 4. page_cache table (no migrations needed)
     c.execute('''CREATE TABLE IF NOT EXISTS page_cache
                  (username TEXT NOT NULL,
                   book_name TEXT NOT NULL,
@@ -399,23 +416,17 @@ def init_database():
                   cached_at TEXT NOT NULL,
                   PRIMARY KEY (username, book_name, page_number))''')
     
-    # --- MIGRATION: Check for and add 'last_page' column to 'book_metadata' ---
     try:
         c.execute("PRAGMA table_info(book_metadata)")
         book_metadata_columns = [column[1] for column in c.fetchall()]
         
-        # Only attempt to ALTER if the table exists AND the column is missing
         if book_metadata_columns and 'last_page' not in book_metadata_columns:
-            # This is the fix for the OperationalError
             c.execute("ALTER TABLE book_metadata ADD COLUMN last_page INTEGER DEFAULT 0")
             print("MIGRATION SUCCESS: Added 'last_page' column to 'book_metadata' table.")
             
     except sqlite3.OperationalError:
-        # This will catch errors if PRAGMA table_info(book_metadata) fails 
-        # because the table doesn't exist yet (which is fine).
         pass 
 
-    # 5. book_metadata table (creation statement, includes last_page)
     c.execute('''CREATE TABLE IF NOT EXISTS book_metadata
                  (username TEXT NOT NULL,
                   original_filename TEXT NOT NULL,
@@ -423,7 +434,6 @@ def init_database():
                   last_page INTEGER DEFAULT 0,
                   PRIMARY KEY (username, original_filename))''')
     
-    # 6. bookmarks table (no migrations needed)
     c.execute('''CREATE TABLE IF NOT EXISTS bookmarks
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   username TEXT NOT NULL,
@@ -666,7 +676,7 @@ def cache_page(username, book_name, page_number, extracted_text, extraction_meth
 
 # --- GEMINI API ---
 try:
-    API_KEY = st.secrets["gemini_api_key"]
+    API_KEY = st.secrets["google_api_key"]
     client = genai.Client(api_key=API_KEY)
 except KeyError:
     st.error("API key not found")
@@ -713,6 +723,7 @@ Text:"""
         return ""
 
 def extract_page_content_async(pdf_path, page_number, username="", book_name=""):
+    """Background text extraction - non-blocking"""
     if username and book_name:
         cached_text, cached_method = get_cached_page(username, book_name, page_number)
         if cached_text:
@@ -744,6 +755,7 @@ def extract_page_content_async(pdf_path, page_number, username="", book_name="")
     return text, "Gemini Vision", False
 
 def start_background_extraction(pdf_path, page_number, username, book_name):
+    """Start extraction in background thread"""
     def extract():
         extract_page_content_async(pdf_path, page_number, username, book_name)
     
@@ -751,10 +763,18 @@ def start_background_extraction(pdf_path, page_number, username, book_name):
     thread.start()
 
 def preload_adjacent_pages(pdf_path, current_page, total_pages, username, book_name):
+    """Preload next and previous pages"""
     if current_page + 1 < total_pages:
         start_background_extraction(pdf_path, current_page + 1, username, book_name)
     if current_page - 1 >= 0:
         start_background_extraction(pdf_path, current_page - 1, username, book_name)
+
+def get_extraction_status(username, book_name, page_number):
+    """Check if text is being extracted or cached"""
+    cached_text, cached_method = get_cached_page(username, book_name, page_number)
+    if cached_text:
+        return "cached", cached_method
+    return "extracting", None
 
 def get_gemini_explanation_stream(client, text_snippet, prompt_type="explain"):
     prompt_templates = {
@@ -792,16 +812,10 @@ if 'current_page' not in st.session_state:
     st.session_state.current_page = 0
 if 'total_pages' not in st.session_state:
     st.session_state.total_pages = 0
-if 'page_text' not in st.session_state:
-    st.session_state.page_text = ""
 if 'page_image' not in st.session_state:
     st.session_state.page_image = None
-if 'extraction_method' not in st.session_state:
-    st.session_state.extraction_method = ""
 if 'view_mode' not in st.session_state:
     st.session_state.view_mode = "reader"
-if 'text_loading' not in st.session_state:
-    st.session_state.text_loading = False
 if 'multi_page_mode' not in st.session_state:
     st.session_state.multi_page_mode = False
 if 'selected_pages' not in st.session_state:
@@ -810,8 +824,8 @@ if 'context_text' not in st.session_state:
     st.session_state.context_text = ""
 if 'multi_page_images' not in st.session_state:
     st.session_state.multi_page_images = []
-if 'touch_start_x' not in st.session_state:
-    st.session_state.touch_start_x = None
+if 'pdf_doc' not in st.session_state:
+    st.session_state.pdf_doc = None
 
 # --- CHECK SESSION ON APP START ---
 if not st.session_state.authenticated:
@@ -890,7 +904,7 @@ st.components.v1.html("""
     }, false);
     
     function handleSwipe() {
-        const threshold = 50;
+        const threshold = 80;
         const diff = touchStartX - touchEndX;
         
         if (Math.abs(diff) > threshold) {
@@ -977,16 +991,14 @@ with st.sidebar:
         
         if selected_book != st.session_state.current_book:
             st.session_state.current_book = selected_book
-            # Load last page user was at
             last_page = get_last_page(st.session_state.username, selected_book)
             st.session_state.current_page = last_page
-            st.session_state.page_text = ""
             st.session_state.page_image = None
-            st.session_state.text_loading = False
             st.session_state.multi_page_mode = False
             st.session_state.selected_pages = []
             st.session_state.context_text = ""
             st.session_state.multi_page_images = []
+            st.session_state.pdf_doc = None
             st.rerun()
         
         with st.expander("Rename"):
@@ -1002,12 +1014,6 @@ with st.sidebar:
     st.header("Settings")
     
     if st.session_state.current_book:
-        if st.session_state.extraction_method:
-            if st.session_state.get('from_cache'):
-                st.success(f"Cached")
-            else:
-                st.info(f"{st.session_state.extraction_method}")
-        
         st.markdown("---")
         
         st.subheader("Multi-Page")
@@ -1073,9 +1079,7 @@ with st.sidebar:
     st.markdown("---")
     
     if st.button("Refresh", use_container_width=True):
-        st.session_state.page_text = ""
         st.session_state.page_image = None
-        st.session_state.text_loading = False
         if st.session_state.multi_page_mode:
             st.session_state.context_text = ""
             st.session_state.multi_page_images = []
@@ -1136,13 +1140,14 @@ else:
     book_path = user_dir / st.session_state.current_book
     display_name = get_display_name(st.session_state.username, st.session_state.current_book)
     
-    try:
-        doc = fitz.open(book_path)
-        st.session_state.total_pages = len(doc)
-        doc.close()
-    except Exception as e:
-        st.error(f"Error: {e}")
-        st.stop()
+    # Load PDF document once
+    if st.session_state.pdf_doc is None:
+        try:
+            st.session_state.pdf_doc = fitz.open(book_path)
+            st.session_state.total_pages = len(st.session_state.pdf_doc)
+        except Exception as e:
+            st.error(f"Error: {e}")
+            st.stop()
 
     # --- READER MODE ---
     if st.session_state.view_mode == "reader":
@@ -1152,12 +1157,10 @@ else:
         col1, col2, col3 = st.columns([1, 2, 1])
         
         with col1:
-            if st.button("Previous", disabled=(st.session_state.current_page == 0), use_container_width=True, key="prev_btn_top"):
+            if st.button("◀ Previous", disabled=(st.session_state.current_page == 0), use_container_width=True, key="prev_btn_top"):
                 st.session_state.current_page -= 1
                 save_last_page(st.session_state.username, st.session_state.current_book, st.session_state.current_page)
                 st.session_state.page_image = None
-                st.session_state.page_text = ""
-                st.session_state.text_loading = False
                 st.rerun()
         
         with col2:
@@ -1175,22 +1178,18 @@ else:
                 st.session_state.current_page = page_jump - 1
                 save_last_page(st.session_state.username, st.session_state.current_book, st.session_state.current_page)
                 st.session_state.page_image = None
-                st.session_state.page_text = ""
-                st.session_state.text_loading = False
                 st.rerun()
         
         with col3:
-            if st.button("Next", disabled=(st.session_state.current_page >= st.session_state.total_pages - 1), use_container_width=True, key="next_btn_top"):
+            if st.button("Next ▶", disabled=(st.session_state.current_page >= st.session_state.total_pages - 1), use_container_width=True, key="next_btn_top"):
                 st.session_state.current_page += 1
                 save_last_page(st.session_state.username, st.session_state.current_book, st.session_state.current_page)
                 st.session_state.page_image = None
-                st.session_state.page_text = ""
-                st.session_state.text_loading = False
                 st.rerun()
 
         # Bookmark button
         is_bm = is_bookmarked(st.session_state.username, st.session_state.current_book, st.session_state.current_page)
-        if st.button(f"{'Remove Bookmark' if is_bm else 'Add Bookmark'}", use_container_width=True):
+        if st.button(f"{'🔖 Remove Bookmark' if is_bm else '🔖 Add Bookmark'}", use_container_width=True):
             if is_bm:
                 remove_bookmark(st.session_state.username, st.session_state.current_book, st.session_state.current_page)
                 st.success("Removed!")
@@ -1202,23 +1201,14 @@ else:
 
         st.markdown("---")
 
-        # Load image immediately
+        # Load image immediately (non-blocking)
         if not st.session_state.page_image:
             st.session_state.page_image = pdf_page_to_image(book_path, st.session_state.current_page)
         
-        # Start text extraction in background
-        if not st.session_state.page_text and not st.session_state.text_loading:
-            st.session_state.text_loading = True
-            cached_text, cached_method = get_cached_page(st.session_state.username, st.session_state.current_book, st.session_state.current_page)
-            if cached_text:
-                st.session_state.page_text = cached_text
-                st.session_state.extraction_method = cached_method
-                st.session_state.from_cache = True
-            else:
-                start_background_extraction(book_path, st.session_state.current_page, st.session_state.username, st.session_state.current_book)
-                st.info("Extracting text... Refresh in a moment")
+        # Start background text extraction (doesn't block UI)
+        start_background_extraction(book_path, st.session_state.current_page, st.session_state.username, st.session_state.current_book)
         
-        # Preload adjacent pages
+        # Preload adjacent pages in background
         preload_adjacent_pages(book_path, st.session_state.current_page, st.session_state.total_pages, st.session_state.username, st.session_state.current_book)
 
         if st.session_state.page_image or (st.session_state.multi_page_mode and st.session_state.multi_page_images):
@@ -1238,11 +1228,11 @@ else:
                     
                     col_t1, col_t2 = st.columns([5, 1])
                     with col_t2:
-                        if st.button("Copy All", use_container_width=True, key="copy_multi"):
+                        if st.button("📋 Copy All", use_container_width=True, key="copy_multi"):
                             st.code(st.session_state.context_text, language=None)
                             st.success("Ready to copy!")
                     
-                    with st.expander("View Text", expanded=False):
+                    with st.expander("📖 View Text", expanded=False):
                         st.markdown(f"<div class='extracted-text-area'>{st.session_state.context_text}</div>", unsafe_allow_html=True)
                 
                 st.markdown("---")
@@ -1256,26 +1246,26 @@ else:
                     st.subheader("Page")
                     st.image(st.session_state.page_image, use_container_width=True)
                     
-                    if st.session_state.page_text:
+                    # Check extraction status
+                    status, method = get_extraction_status(st.session_state.username, st.session_state.current_book, st.session_state.current_page)
+                    
+                    if status == "cached":
+                        cached_text, _ = get_cached_page(st.session_state.username, st.session_state.current_book, st.session_state.current_page)
+                        
                         col_t1, col_t2 = st.columns([5, 1])
                         with col_t2:
-                            if st.button("Copy", use_container_width=True, key="copy_single"):
-                                st.code(st.session_state.page_text, language=None)
+                            if st.button("📋 Copy", use_container_width=True, key="copy_single"):
+                                st.code(cached_text, language=None)
                                 st.success("Ready to copy!")
                         
-                        with st.expander("Text", expanded=False):
-                            st.markdown(f"<div class='extracted-text-area'>{st.session_state.page_text}</div>", unsafe_allow_html=True)
+                        with st.expander("📖 View Text", expanded=False):
+                            st.markdown(f"<div class='extracted-text-area'>{cached_text}</div>", unsafe_allow_html=True)
                     else:
-                        if st.session_state.text_loading:
-                            if st.button("Check for Text", use_container_width=True):
-                                cached_text, cached_method = get_cached_page(st.session_state.username, st.session_state.current_book, st.session_state.current_page)
-                                if cached_text:
-                                    st.session_state.page_text = cached_text
-                                    st.session_state.extraction_method = cached_method
-                                    st.session_state.from_cache = True
-                                    st.rerun()
-                                else:
-                                    st.info("Still extracting...")
+                        # Show subtle extraction indicator inside expander
+                        with st.expander("📖 View Text (Extracting...)", expanded=False):
+                            if st.button("🔄 Check Status", use_container_width=True):
+                                st.rerun()
+                            st.markdown("<div class='extraction-status'>⏳ Text extraction in progress...</div>", unsafe_allow_html=True)
                 
                 with col_analysis:
                     st.subheader("Analysis")
@@ -1284,18 +1274,18 @@ else:
             selected_text = st.text_area(
                 "Paste text:",
                 height=120,
-                placeholder="Paste here...",
+                placeholder="Paste text here to analyze...",
                 key="user_text_input"
             )
             
             use_full_context = False
             if st.session_state.multi_page_mode and st.session_state.context_text:
-                use_full_context = st.checkbox("Use all pages", value=True)
+                use_full_context = st.checkbox("Use all pages as context", value=True)
             
             if selected_text and selected_text.strip():
                 st.markdown(f"<div class='selected-text-box'>{selected_text.strip()[:100]}...</div>", unsafe_allow_html=True)
                 
-                st.markdown("**Actions:**")
+                st.markdown("**Quick Actions:**")
                 
                 actions = {
                     "Translate": "translate",
@@ -1334,14 +1324,14 @@ else:
                                     name, name, full_response,
                                     selected_text.strip()
                                 )
-                                st.success("Saved!")
+                                st.success("Saved to history!")
                 
                 st.markdown("---")
-                st.markdown("**Custom:**")
+                st.markdown("**Custom Question:**")
                 
-                custom_q = st.text_input("Ask:", key="custom_q")
+                custom_q = st.text_input("Ask anything about this text:", key="custom_q")
                 
-                if st.button("Answer", disabled=not custom_q, use_container_width=True):
+                if st.button("Get Answer", disabled=not custom_q, use_container_width=True):
                     try:
                         analysis_text = selected_text.strip()
                         if use_full_context and st.session_state.context_text:
@@ -1370,13 +1360,13 @@ else:
                             custom_q, full_response,
                             selected_text.strip()
                         )
-                        st.success("Saved!")
+                        st.success("Saved to history!")
                     except Exception as e:
                         st.error(f"Error: {e}")
 
     # --- BOOKMARKS MODE ---
     elif st.session_state.view_mode == "bookmarks":
-        st.markdown(f"<div class='book-title'>Bookmarks: {display_name}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='book-title'>🔖 Bookmarks: {display_name}</div>", unsafe_allow_html=True)
         
         bookmarks = get_bookmarks(st.session_state.username, st.session_state.current_book)
         
@@ -1390,19 +1380,18 @@ else:
                 with col_b1:
                     st.markdown(f"""
                     <div class='bookmark-badge'>
-                        Page {page_num + 1} - {created_at[:16]}
+                        📄 Page {page_num + 1} - {created_at[:16]}
                     </div>
                     """, unsafe_allow_html=True)
                     if note:
                         st.caption(f"Note: {note}")
                 
                 with col_b2:
-                    if st.button(f"Go", key=f"goto_bm_{page_num}", use_container_width=True):
+                    if st.button(f"Go to Page", key=f"goto_bm_{page_num}", use_container_width=True):
                         st.session_state.view_mode = "reader"
                         st.session_state.current_page = page_num
                         save_last_page(st.session_state.username, st.session_state.current_book, page_num)
                         st.session_state.page_image = None
-                        st.session_state.page_text = ""
                         st.rerun()
                 
                 st.markdown("---")
@@ -1411,13 +1400,13 @@ else:
 
     # --- HISTORY MODE ---
     elif st.session_state.view_mode == "history":
-        st.markdown(f"<div class='book-title'>History: {display_name}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='book-title'>📚 History: {display_name}</div>", unsafe_allow_html=True)
         
         col1, col2, col3 = st.columns([2, 2, 1])
         
         with col1:
             md_export = export_book_history_to_markdown(st.session_state.username, st.session_state.current_book)
-            st.download_button("MD", md_export, file_name=f"{display_name}.md", mime="text/markdown", use_container_width=True)
+            st.download_button("📄 Export Markdown", md_export, file_name=f"{display_name}.md", mime="text/markdown", use_container_width=True)
         
         with col2:
             history_data = get_book_history(st.session_state.username, st.session_state.current_book)
@@ -1428,11 +1417,11 @@ else:
                 "history": [{"page": p + 1, "type": pt, "question": q, "answer": a, "text": t, "time": ts}
                     for _, p, pt, q, a, t, ts in history_data]
             }
-            st.download_button("JSON", json.dumps(json_data, ensure_ascii=False, indent=2), 
+            st.download_button("📊 Export JSON", json.dumps(json_data, ensure_ascii=False, indent=2), 
                              file_name=f"{display_name}.json", mime="application/json", use_container_width=True)
         
         with col3:
-            if st.button("Clear", use_container_width=True):
+            if st.button("🗑️ Clear All", use_container_width=True):
                 if st.session_state.get('confirm_clear'):
                     clear_book_history(st.session_state.username, st.session_state.current_book)
                     st.session_state.confirm_clear = False
@@ -1468,12 +1457,11 @@ else:
                 
                 col_a1, col_a2 = st.columns([3, 1])
                 with col_a1:
-                    if st.button(f"Page {page_num + 1}", key=f"goto_{item_id}", use_container_width=True):
+                    if st.button(f"📄 Go to Page {page_num + 1}", key=f"goto_{item_id}", use_container_width=True):
                         st.session_state.view_mode = "reader"
                         st.session_state.current_page = page_num
                         save_last_page(st.session_state.username, st.session_state.current_book, page_num)
                         st.session_state.page_image = None
-                        st.session_state.page_text = ""
                         st.rerun()
                 
                 with col_a2:
@@ -1484,7 +1472,7 @@ else:
                 st.markdown("</div>", unsafe_allow_html=True)
                 st.markdown("---")
         else:
-            st.info("No history")
+            st.info("No history yet. Start analyzing text to build your history!")
 
 st.markdown("---")
-st.markdown("<div style='text-align: center; color: #64748b; font-size: 0.9rem;'>Built with Gemini 2.0</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; color: #64748b; font-size: 0.9rem;'>Built with Gemini 2.0 Flash | Swipe to navigate on mobile</div>", unsafe_allow_html=True)
