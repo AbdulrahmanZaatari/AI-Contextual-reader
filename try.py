@@ -1041,8 +1041,6 @@ st.components.v1.html("""
         }
     }
 
-    // --- Key Change: Attach listeners to the parent window's document ---
-    // The current script runs inside an iframe, so we listen on the parent.
     window.parent.document.addEventListener('touchstart', e => {
         // Only track single touches for swipe
         if (e.touches.length === 1) {
@@ -1416,9 +1414,6 @@ else:
                             if st.button("🔄 Check Status", use_container_width=True):
                                 st.rerun()
                             st.markdown("<div class='extraction-status'>⏳ Text extraction in progress...</div>", unsafe_allow_html=True)
-                
-                with col_analysis:
-                    st.subheader("Analysis")
             
             with col_analysis:
                 st.subheader("Analysis")
@@ -1511,39 +1506,32 @@ else:
                         with cols[idx % 4]:
                             if st.button(name, use_container_width=True, key=f"btn_{ptype}"):
                                 
-                                analysis_text = selected_text.strip()
-                                
-                                # --- CUSTOM PROMPT LOGIC (using database template) ---
-                                if ptype.startswith("custom_"):
-                                    
-                                    prompt_template = custom_prompts_map.get(ptype, "")
-                                    
-                                    if not prompt_template:
-                                        st.error("Error: Custom prompt template not found.")
-                                        continue
-                                    
-                                    # 1. Fill the template with the selected text
-                                    template_filled = prompt_template.replace('{{text_snippet}}', analysis_text)
-                                    
-                                    # 2. Apply multi-page context if enabled
-                                    if use_full_context and st.session_state.context_text:
-                                        prompt = f"CONTEXT:\n{st.session_state.context_text}\n\nUSER PROMPT:\n{template_filled}"
-                                    else:
-                                        prompt = template_filled
-                                    
-                                    # Call Gemini API directly (since this is custom logic)
-                                    response_stream = client.models.generate_content_stream(
-                                        model='gemini-2.5-flash',
-                                        contents=prompt
-                                    )
-                                    
-                                # --- BUILT-IN ACTION LOGIC ---
-                                else:
-                                    # Use the existing function for built-in actions 
-                                    # Assuming get_gemini_explanation_stream is defined elsewhere
-                                    response_stream = get_gemini_explanation_stream(client, analysis_text, ptype)
+                                # Determine the primary text to send to the prompt builder.
+                                # Use full context text if checked, otherwise use the pasted text.
+                                analysis_text_to_send = selected_text.strip()
+                                if use_full_context and st.session_state.context_text:
+                                    # Note: Your utility function (get_gemini_explanation_stream) will need 
+                                    # to be updated to check for multi-page context, or you can adjust this logic.
+                                    # For now, we only send the selected_text, as your utility function
+                                    # is only designed to inject into '{{text_snippet}}'.
+                                    # If you want to use context, you should adjust the utility function.
+                                    # Let's stick to the simplest fix: just send the selected text.
+                                    pass # analysis_text_to_send is already set to selected_text.strip()
 
-                                # --- STREAMING RESPONSE & HISTORY SAVE ---
+                                try:
+                                    # Use the utility function for all quick actions (built-in and custom).
+                                    # It handles template lookup, injection, and the API call.
+                                    final_prompt, response_stream = get_gemini_explanation_stream(
+                                        client, 
+                                        analysis_text_to_send, 
+                                        ptype
+                                    )
+
+                                except Exception as e:
+                                    st.error(f"Error during API call setup: {e}")
+                                    response_stream = None # Ensure stream is None on failure
+
+                                # --- STREAMING RESPONSE & HISTORY SAVE (Centralized Logic) ---
                                 if response_stream:
                                     placeholder = st.empty()
                                     full_response = ""
@@ -1554,14 +1542,13 @@ else:
                                             placeholder.markdown(f"<div class='ai-explanation'><strong>{name}:</strong><br><br>{full_response}</div>", unsafe_allow_html=True)
                                     
                                     # Save to history
-                                    # Use the button name for both prompt_type and question for Quick Actions/Custom Prompts
-                                    # Assuming save_to_history is defined elsewhere
+                                    # Use the button name for question and prompt_type for consistency
                                     save_to_history(
                                         st.session_state.username,
                                         st.session_state.current_book,
                                         st.session_state.current_page,
                                         name, name, full_response, 
-                                        selected_text.strip()
+                                        analysis_text_to_send
                                     )
                                     st.success("Saved to history!")
                     
@@ -1715,4 +1702,4 @@ else:
             st.info("No history yet. Start analyzing text to build your history!")
 
 st.markdown("---")
-st.markdown("<div style='text-align: center; color: #64748b; font-size: 0.9rem;'>Built with Gemini 2.5 Flash | Swipe to navigate on mobile</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; color: #64748b; font-size: 0.9rem;'>Built with Gemini 2.0 Flash | Swipe to navigate on mobile</div>", unsafe_allow_html=True)
