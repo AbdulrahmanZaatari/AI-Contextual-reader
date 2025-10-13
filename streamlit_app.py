@@ -75,27 +75,29 @@ st.markdown("""
     }
     
     .selected-text-box {
-        background: #fef3c7;
-        border-left: 4px solid #f59e0b;
-        padding: 1rem;
-        border-radius: 8px;
-        margin: 1rem 0;
-        font-family: 'Traditional Arabic', 'Simplified Arabic', 'Segoe UI', sans-serif;
-        font-size: 1.3rem;
-        direction: rtl;
-        line-height: 2.2;
-        white-space: pre-wrap;
-        text-align: right;
-    }
-    
-    .ai-explanation {
-        background: #dbeafe;
-        border-left: 4px solid #3b82f6;
-        padding: 1.5rem;
-        border-radius: 8px;
-        margin: 1rem 0;
-        line-height: 1.8;
-    }
+    background: #fef3c7;
+    border-left: 4px solid #f59e0b;
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 1rem 0;
+    font-family: 'Traditional Arabic', 'Simplified Arabic', 'Segoe UI', sans-serif;
+    font-size: 1.3rem;
+    direction: rtl;
+    line-height: 2.2;
+    white-space: pre-wrap;
+    text-align: right;
+    color: #4a5568;
+}
+ 
+.ai-explanation {
+    background: #dbeafe;
+    border-left: 4px solid #3b82f6;
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin: 1rem 0;
+    line-height: 1.8;
+    color: #1e293b;
+}
     
     .history-chat-item {
         background: white;
@@ -117,25 +119,27 @@ st.markdown("""
     }
     
     .history-text {
-        background: #fef3c7;
-        border-left: 4px solid #f59e0b;
-        padding: 1rem;
-        border-radius: 8px;
-        margin-bottom: 1rem;
-        font-family: 'Traditional Arabic', 'Simplified Arabic', 'Segoe UI', sans-serif;
-        direction: rtl;
-        text-align: right;
-        max-height: 200px;
-        overflow-y: auto;
-    }
+    background: #fef3c7;
+    border-left: 4px solid #f59e0b;
+    padding: 1rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    font-family: 'Traditional Arabic', 'Simplified Arabic', 'Segoe UI', sans-serif;
+    direction: rtl;
+    text-align: right;
+    max-height: 200px;
+    overflow-y: auto;
+    color: #4a5568; 
+}
     
-    .history-response {
-        background: #f0fdf4;
-        border-left: 4px solid #22c55e;
-        padding: 1rem;
-        border-radius: 8px;
-        line-height: 1.8;
-    }
+  .history-response {
+    background: #f0fdf4;
+    border-left: 4px solid #22c55e;
+    padding: 1rem;
+    border-radius: 8px;
+    line-height: 1.8;
+    color: #1e293b; 
+}
     
     .page-badge {
         display: inline-block;
@@ -157,13 +161,14 @@ st.markdown("""
         margin-left: 0.5rem;
     }
     
-    .info-box {
-        background: #f0fdf4;
-        border-left: 4px solid #22c55e;
-        padding: 1rem;
-        border-radius: 8px;
-        margin: 1rem 0;
-    }
+   .info-box {
+    background: #f0fdf4;
+    border-left: 4px solid #22c55e;
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 1rem 0;
+    color: #166534; 
+}
     
     .feature-card {
         background: white;
@@ -212,12 +217,13 @@ st.markdown("""
     }
     
     .tip-box {
-        background: #fef3c7;
-        border: 2px solid #fbbf24;
-        border-radius: 8px;
-        padding: 1rem;
-        margin: 1rem 0;
-    }
+    background: #fef3c7;
+    border: 2px solid #fbbf24;
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+    color: #78350f;
+}
     
     .page-number-label {
         text-align: center;
@@ -888,40 +894,57 @@ if not st.session_state.authenticated:
 # --- MAIN APP ---
 user_dir = get_user_books_dir(st.session_state.username)
 
-# --- SWIPE DETECTION FOR MOBILE ---
 st.components.v1.html("""
 <script>
     let touchStartX = 0;
     let touchEndX = 0;
     
-    document.addEventListener('touchstart', (e) => {
-        touchStartX = e.changedTouches[0].screenX;
-    }, false);
-    
-    document.addEventListener('touchend', (e) => {
+    // --- Mobile Swipe Logic ---
+    document.addEventListener('touchstart', e => touchStartX = e.changedTouches[0].screenX, false);
+    document.addEventListener('touchend', e => {
         touchEndX = e.changedTouches[0].screenX;
         handleSwipe();
     }, false);
-    
+
+    window.parent.document.addEventListener('keydown', function(e) {
+        // Prevent action if user is typing in an input field
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+            return;
+        }
+
+        const buttons = window.parent.document.querySelectorAll('button');
+        if (e.key === "ArrowRight") {
+            for (let btn of buttons) {
+                if (btn.textContent === 'Next ▶' && !btn.disabled) {
+                    btn.click();
+                    break;
+                }
+            }
+        } else if (e.key === "ArrowLeft") {
+            for (let btn of buttons) {
+                if (btn.textContent === '◀ Previous' && !btn.disabled) {
+                    btn.click();
+                    break;
+                }
+            }
+        }
+    });
+
     function handleSwipe() {
         const threshold = 80;
         const diff = touchStartX - touchEndX;
-        
         if (Math.abs(diff) > threshold) {
-            if (diff > 0) {
-                // Swiped left - next page
-                const buttons = window.parent.document.querySelectorAll('button');
+            const buttons = window.parent.document.querySelectorAll('button');
+            if (diff > 0) { // Swiped left for "Next"
                 for (let btn of buttons) {
-                    if (btn.textContent.includes('Next') && !btn.disabled) {
+                    if (btn.textContent === 'Next ▶' && !btn.disabled) {
                         btn.click();
                         break;
                     }
                 }
-            } else {
-                // Swiped right - previous page
-                const buttons = window.parent.document.querySelectorAll('button');
+            } else { // Swiped right for "Previous"
                 for (let btn of buttons) {
-                    if (btn.textContent.includes('Previous') && !btn.disabled) {
+                    if (btn.textContent === '◀ Previous' && !btn.disabled) {
                         btn.click();
                         break;
                     }
