@@ -186,6 +186,7 @@ st.markdown("""
         -webkit-user-select: text;
         -moz-user-select: text;
         -ms-user-select: text;
+        color: #334155;
     }
     
     .context-badge {
@@ -786,6 +787,15 @@ def get_gemini_explanation_stream(client, text_snippet, prompt_type="explain"):
         return response
     except:
         return None
+    
+def handle_page_jump():
+    """Callback to handle page changes from the number_input widget."""
+    new_page = st.session_state.page_jump_input - 1
+    if new_page != st.session_state.current_page:
+        st.session_state.current_page = new_page
+        save_last_page(st.session_state.username, st.session_state.current_book, new_page)
+        st.session_state.page_image = None
+
 
 # --- SESSION STATE ---
 if 'session_token' not in st.session_state:
@@ -1156,35 +1166,33 @@ else:
 
     # --- READER MODE ---
     if st.session_state.view_mode == "reader":
+        if 'page_jump_input' not in st.session_state:
+            st.session_state.page_jump_input = st.session_state.current_page + 1
+        elif st.session_state.page_jump_input != st.session_state.current_page + 1:
+            st.session_state.page_jump_input = st.session_state.current_page + 1
         st.markdown(f"<div class='book-title'>{display_name}</div>", unsafe_allow_html=True)
 
         # Top navigation
         col1, col2, col3 = st.columns([1, 2, 1])
-        
+    
         with col1:
             if st.button("◀ Previous", disabled=(st.session_state.current_page == 0), use_container_width=True, key="prev_btn_top"):
                 st.session_state.current_page -= 1
                 save_last_page(st.session_state.username, st.session_state.current_book, st.session_state.current_page)
                 st.session_state.page_image = None
                 st.rerun()
-        
+    
         with col2:
             st.markdown(f"<div class='page-info'>Page {st.session_state.current_page + 1} of {st.session_state.total_pages}</div>", unsafe_allow_html=True)
-            
             page_jump = st.number_input(
                 "Jump:", 
                 min_value=1, 
                 max_value=st.session_state.total_pages, 
-                value=st.session_state.current_page + 1, 
                 label_visibility="collapsed",
-                key="page_jump_input"
+                key="page_jump_input",
+                on_change=handle_page_jump
             )
-            if page_jump - 1 != st.session_state.current_page:
-                st.session_state.current_page = page_jump - 1
-                save_last_page(st.session_state.username, st.session_state.current_book, st.session_state.current_page)
-                st.session_state.page_image = None
-                st.rerun()
-        
+
         with col3:
             if st.button("Next ▶", disabled=(st.session_state.current_page >= st.session_state.total_pages - 1), use_container_width=True, key="next_btn_top"):
                 st.session_state.current_page += 1
@@ -1259,9 +1267,9 @@ else:
                         
                         col_t1, col_t2 = st.columns([5, 1])
                         with col_t2:
-                            if st.button("📋 Copy", use_container_width=True, key="copy_single"):
+                            with st.popover("📋 Copy Text", use_container_width=True, help="Click to view and copy the extracted text."):
+                                st.info("The text below is ready to copy! Use the native copy button on the code block.")
                                 st.code(cached_text, language=None)
-                                st.success("Ready to copy!")
                         
                         with st.expander("📖 View Text", expanded=False):
                             st.markdown(f"<div class='extracted-text-area'>{cached_text}</div>", unsafe_allow_html=True)
