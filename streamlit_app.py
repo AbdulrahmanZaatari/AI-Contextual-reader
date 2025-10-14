@@ -870,16 +870,16 @@ def get_gemini_explanation_stream(client, text_snippet, prompt_value="explain"):
     static keys and custom prompt IDs.
     """
     
-    # 1. Static Prompt Templates
+    # 1. Static Prompt Templates (WITHOUT text_snippet injected yet)
     prompt_templates = {
-        "translate": f"Translate to English and explain.\n\nText: {text_snippet}",
-        "explain": f"Analyze and explain clearly.\n\nText: {text_snippet}",
-        "eli5": f"Explain simply (ELI5).\n\nText: {text_snippet}",
-        "historical": f"Historical and cultural context.\n\nText: {text_snippet}",
-        "summary": f"Brief summary.\n\nText: {text_snippet}",
-        "compare": f"Compare and contrast themes.\n\nText: {text_snippet}",
-        "themes": f"Extract main themes.\n\nText: {text_snippet}",
-        "cite": f"Citation-worthy insights.\n\nText: {text_snippet}"
+        "translate": "Translate to English and explain.\n\nText: {text}",
+        "explain": "Analyze and explain clearly.\n\nText: {text}",
+        "eli5": "Explain simply (ELI5).\n\nText: {text}",
+        "historical": "Historical and cultural context.\n\nText: {text}",
+        "summary": "Brief summary.\n\nText: {text}",
+        "compare": "Compare and contrast themes.\n\nText: {text}",
+        "themes": "Extract main themes.\n\nText: {text}",
+        "cite": "Citation-worthy insights.\n\nText: {text}"
     }
     
     prompt = None
@@ -898,16 +898,23 @@ def get_gemini_explanation_stream(client, text_snippet, prompt_value="explain"):
             if result:
                 # Inject the text snippet into the custom template using the placeholder
                 prompt_template = result[0]
-                prompt = prompt_template.replace("{{text_snippet}}", text_snippet).strip()
+                
+                # Check if placeholder exists, if not, append the text
+                if "{{text_snippet}}" in prompt_template:
+                    prompt = prompt_template.replace("{{text_snippet}}", text_snippet).strip()
+                else:
+                    # If user forgot placeholder, append text automatically
+                    prompt = f"{prompt_template}\n\nالنص:\n{text_snippet}".strip()
                 
         except Exception as e:
             # Fallback for corrupted custom ID
             print(f"Error retrieving custom prompt: {e}")
-            prompt = prompt_templates["explain"]
+            prompt = prompt_templates["explain"].format(text=text_snippet)
             
     # B. Handle Static Prompts (Key is "explain", "eli5", etc.)
     elif prompt_value in prompt_templates:
-        prompt = prompt_templates[prompt_value]
+        # NOW inject the text_snippet into the template
+        prompt = prompt_templates[prompt_value].format(text=text_snippet)
         
     # C. Handle Custom Question (The actual question text)
     else:
@@ -916,7 +923,7 @@ def get_gemini_explanation_stream(client, text_snippet, prompt_value="explain"):
         
     # Final check: Fallback if everything fails
     if not prompt:
-        prompt = prompt_templates["explain"]
+        prompt = prompt_templates["explain"].format(text=text_snippet)
     
     try:
         response = client.models.generate_content_stream(
@@ -1059,8 +1066,6 @@ st.components.v1.html("""
         }
     }
 
-    // --- Key Change: Attach listeners to the parent window's document ---
-    // The current script runs inside an iframe, so we listen on the parent.
     window.parent.document.addEventListener('touchstart', e => {
         // Only track single touches for swipe
         if (e.touches.length === 1) {
@@ -1190,7 +1195,7 @@ with st.sidebar:
         multi_page_enabled = st.checkbox(
             "Enable",
             value=st.session_state.multi_page_mode,
-            help="Max 5 pages"
+            help="Max 4 pages"
         )
         
         if multi_page_enabled != st.session_state.multi_page_mode:
@@ -1214,7 +1219,7 @@ with st.sidebar:
                 end_page = st.number_input(
                     "End:", 
                     min_value=start_page, 
-                    max_value=min(start_page + 4, st.session_state.total_pages),
+                    max_value=min(start_page + 3, st.session_state.total_pages),
                     value=min(start_page + 1, st.session_state.total_pages),
                     key="end_page_select"
                 )
@@ -1222,8 +1227,8 @@ with st.sidebar:
             if st.button("Load", use_container_width=True):
                 selected = list(range(start_page - 1, end_page))
                 if len(selected) > 5:
-                    st.warning("Max 5")
-                    selected = selected[:5]
+                    st.warning("Max 4")
+                    selected = selected[:4]
                 
                 st.session_state.selected_pages = selected
                 with st.spinner("Loading..."):
@@ -1380,37 +1385,33 @@ else:
         preload_adjacent_pages(book_path, st.session_state.current_page, st.session_state.total_pages, st.session_state.username, st.session_state.current_book)
 
         if st.session_state.page_image or (st.session_state.multi_page_mode and st.session_state.multi_page_images):
-            if st.session_state.multi_page_mode and st.session_state.multi_page_images:
-                st.subheader("Pages")
-                st.markdown(f"<div class='context-badge'>{len(st.session_state.multi_page_images)} pages</div>", unsafe_allow_html=True)
-                
-                cols = st.columns(len(st.session_state.multi_page_images))
-                for idx, (page_num, img) in enumerate(st.session_state.multi_page_images):
-                    with cols[idx]:
-                        st.markdown(f"<div class='page-number-label'>Page {page_num}</div>", unsafe_allow_html=True)
-                        st.image(img, use_container_width=True)
-                
-                if st.session_state.context_text:
-                    st.markdown("---")
-                    st.subheader("Extracted Text")
+            # Always create the two-column layout
+            col_pdf, col_analysis = st.columns([1, 1])
+            
+            with col_pdf:
+                if st.session_state.multi_page_mode and st.session_state.multi_page_images:
+                    st.subheader("Pages")
+                    st.markdown(f"<div class='context-badge'>{len(st.session_state.multi_page_images)} pages</div>", unsafe_allow_html=True)
                     
-                    col_t1, col_t2 = st.columns([5, 1])
-                    with col_t2:
-                        if st.button("📋 Copy All", use_container_width=True, key="copy_multi"):
-                            st.code(st.session_state.context_text, language=None)
-                            st.success("Ready to copy!")
+                    cols = st.columns(len(st.session_state.multi_page_images))
+                    for idx, (page_num, img) in enumerate(st.session_state.multi_page_images):
+                        with cols[idx]:
+                            st.markdown(f"<div class='page-number-label'>Page {page_num}</div>", unsafe_allow_html=True)
+                            st.image(img, use_container_width=True)
                     
-                    with st.expander("📖 View Text", expanded=False):
-                        st.markdown(f"<div class='extracted-text-area'>{st.session_state.context_text}</div>", unsafe_allow_html=True)
+                    if st.session_state.context_text:
+                        st.markdown("---")
+                        
+                        col_t1, col_t2 = st.columns([5, 1])
+                        with col_t2:
+                            with st.popover("📋 Copy Text", use_container_width=True, help="Click to view and copy the extracted text."):
+                                st.info("The text below is ready to copy! Use the native copy button on the code block.")
+                                st.code(st.session_state.context_text, language=None)
+                        
+                        with st.expander("📖 View Text", expanded=False):
+                            st.markdown(f"<div class='extracted-text-area'>{st.session_state.context_text}</div>", unsafe_allow_html=True)
                 
-                st.markdown("---")
-                st.subheader("AI Analysis")
-                st.info(f"Analyzing {len(st.session_state.selected_pages)} pages")
-                
-            else:
-                col_pdf, col_analysis = st.columns([1, 1])
-                
-                with col_pdf:
+                else:
                     st.subheader("Page")
                     st.image(st.session_state.page_image, use_container_width=True)
                     
@@ -1434,27 +1435,26 @@ else:
                             if st.button("🔄 Check Status", use_container_width=True):
                                 st.rerun()
                             st.markdown("<div class='extraction-status'>⏳ Text extraction in progress...</div>", unsafe_allow_html=True)
-                
-                with col_analysis:
-                    st.subheader("Analysis")
             
             with col_analysis:
                 st.subheader("Analysis")
-    
-                # --- CUSTOM PROMPT MANAGER TRIGGER & UI (from previous step) ---
+                # Show context info for multi-page mode
+                if st.session_state.multi_page_mode and st.session_state.selected_pages:
+                    st.info(f"📄 Analyzing {len(st.session_state.selected_pages)} pages")
+                
+                # --- CUSTOM PROMPT MANAGER ---
                 if st.button("🔧 Manage Custom Prompts", use_container_width=True, key="manage_prompts_btn"):
-                    # Toggle visibility
                     st.session_state.show_prompt_manager = not st.session_state.get('show_prompt_manager', False)
-                    
-                # --- NEW: CUSTOM PROMPT MANAGER UI (Placeholders for actual implementation) ---
+                
+                # --- CUSTOM PROMPT MANAGER UI ---
                 if st.session_state.get('show_prompt_manager', False):
                     st.markdown("---")
                     st.subheader("Custom Prompts Editor")
-
-                    # 1. CREATE NEW PROMPT FORM
+                    
+                    # CREATE NEW PROMPT
                     with st.form("new_prompt_form", clear_on_submit=True):
                         st.markdown("#### ➕ Create New Prompt")
-                        new_prompt_name = st.text_input("Prompt Name (e.g., 'Summary for Notion')", max_chars=50)
+                        new_prompt_name = st.text_input("Prompt Name", placeholder="e.g., 'Summary for Notion'", max_chars=50)
                         new_prompt_template = st.text_area(
                             "Prompt Template",
                             placeholder="Act as a professional technical writer. Summarize the following text into three detailed points. Text: {{text_snippet}}",
@@ -1462,9 +1462,7 @@ else:
                         )
                         submitted = st.form_submit_button("💾 Save Prompt")
                         
-                        # --- DATABASE CALLS FOR SAVE ---
                         if submitted and new_prompt_name and new_prompt_template:
-                            # Assuming save_custom_prompt is defined in your utilities
                             success, message = save_custom_prompt(
                                 st.session_state.username, 
                                 new_prompt_name.strip(), 
@@ -1472,16 +1470,15 @@ else:
                             )
                             if success:
                                 st.success(message)
+                                st.rerun()
                             else:
                                 st.warning(message)
-                            st.rerun() 
-
-                    st.info("Tip: Use `{{text_snippet}}` in your template to mark where the selected text will be inserted.")
                     
-                    # 2. VIEW/DELETE PROMPTS LIST
-                    st.markdown("#### 🗑️ Your Saved Prompts")
-                    # Assuming get_custom_prompts is defined in your utilities
-                    custom_prompts_list = get_custom_prompts(st.session_state.username) 
+                    st.info("💡 Tip: Use `{{text_snippet}}` in your template to mark where the selected text will be inserted.")
+                    
+                    # VIEW/DELETE PROMPTS
+                    st.markdown("#### 📋 Your Saved Prompts")
+                    custom_prompts_list = get_custom_prompts(st.session_state.username)
                     
                     if custom_prompts_list:
                         for prompt_id, name, template in custom_prompts_list:
@@ -1490,137 +1487,196 @@ else:
                                 with st.expander(f"**{name}**", expanded=False):
                                     st.code(template, language="plaintext")
                             with col_c2:
-                                if st.button("Delete", key=f"delete_btn_{prompt_id}", type="secondary", use_container_width=True):
-                                    # Assuming delete_custom_prompt is defined in your utilities
-                                    delete_custom_prompt(prompt_id) 
-                                    st.rerun() 
+                                if st.button("🗑️", key=f"delete_btn_{prompt_id}", use_container_width=True, help="Delete prompt"):
+                                    delete_custom_prompt(prompt_id)
+                                    st.success(f"Deleted '{name}'")
+                                    st.rerun()
                     else:
-                        st.caption("No custom prompts saved.")
-                    st.markdown("---") 
-                # --- END CUSTOM PROMPT MANAGER UI ---
-
+                        st.caption("No custom prompts saved yet.")
+                    
+                    st.markdown("---")
+                
+                # --- TEXT INPUT SECTION ---
+                # Initialize analysis_text if it doesn't exist
+                if 'analysis_text' not in st.session_state:
+                    st.session_state.analysis_text = ""
+                
                 selected_text = st.text_area(
-                    "Paste text:",
+                    "Paste text to analyze:",
                     height=120,
-                    placeholder="Paste text here to analyze...",
-                    key="user_text_input"
+                    placeholder="Paste your text here...",
+                    key="user_text_input",
+                    value=st.session_state.analysis_text  # Preserve the text across reruns
                 )
                 
-                use_full_context = False
-                if st.session_state.multi_page_mode and st.session_state.context_text:
-                    use_full_context = st.checkbox("Use all pages as context", value=True)
+                # Update session state when textarea changes
+                if selected_text != st.session_state.analysis_text:
+                    st.session_state.analysis_text = selected_text.strip() if selected_text else ""
                 
-                if selected_text and selected_text.strip():
-                    st.markdown(f"<div class='selected-text-box'>{selected_text.strip()[:100]}...</div>", unsafe_allow_html=True)
+                # --- ANALYSIS ACTIONS ---
+                # Use the stored text from session state
+                if st.session_state.get('analysis_text'):
+                    # Initialize read more state if not exists
+                    if 'show_full_text' not in st.session_state:
+                        st.session_state.show_full_text = False
                     
-                    st.markdown("**Quick Actions & Custom Prompts:**")
+                    # Yellow visual box with expand/collapse - showing preview with "Read More"
+                    text_preview_limit = 200  # Character limit for preview
+                    full_text = st.session_state.analysis_text
                     
-                    # Get all actions (built-in and custom from DB)
-                    # Assuming get_all_prompts is defined in your utilities
-                    actions = get_all_prompts(st.session_state.username) 
-
-                    # Re-fetch custom prompts list to look up template quickly if needed
-                    # Assuming get_custom_prompts is defined in your utilities
-                    custom_prompts_db = get_custom_prompts(st.session_state.username)
-                    custom_prompts_map = {f"custom_{id}": template for id, _, template in custom_prompts_db}
-
+                    # Collapsible container for selected text
+                    with st.expander("📝 **Selected Text**", expanded=True):
+                        if len(full_text) > text_preview_limit:
+                            # Long text - show preview or full based on state
+                            if st.session_state.show_full_text:
+                                st.markdown(f"<div class='selected-text-box'>{full_text}</div>", unsafe_allow_html=True)
+                                if st.button("📕 Show Less", key="show_less_btn"):
+                                    st.session_state.show_full_text = False
+                                    st.rerun()
+                            else:
+                                st.markdown(f"<div class='selected-text-box'>{full_text[:text_preview_limit]}...</div>", unsafe_allow_html=True)
+                                if st.button("📖 Read More", key="read_more_btn"):
+                                    st.session_state.show_full_text = True
+                                    st.rerun()
+                        else:
+                            # Short text - just show it
+                            st.markdown(f"<div class='selected-text-box'>{full_text}</div>", unsafe_allow_html=True)
+                    
+                    st.markdown("---")
+                    st.markdown("**Quick Actions:**")
+                    
+                    # Get all available prompts
+                    actions = get_all_prompts(st.session_state.username)
+                    
+                    # Action buttons in columns
                     cols = st.columns(4)
                     for idx, (name, ptype) in enumerate(actions.items()):
                         with cols[idx % 4]:
-                            if st.button(name, use_container_width=True, key=f"btn_{ptype}"):
-                                
-                                analysis_text = selected_text.strip()
-                                
-                                # --- CUSTOM PROMPT LOGIC (using database template) ---
-                                if ptype.startswith("custom_"):
-                                    
-                                    prompt_template = custom_prompts_map.get(ptype, "")
-                                    
-                                    if not prompt_template:
-                                        st.error("Error: Custom prompt template not found.")
-                                        continue
-                                    
-                                    # 1. Fill the template with the selected text
-                                    template_filled = prompt_template.replace('{{text_snippet}}', analysis_text)
-                                    
-                                    # 2. Apply multi-page context if enabled
-                                    if use_full_context and st.session_state.context_text:
-                                        prompt = f"CONTEXT:\n{st.session_state.context_text}\n\nUSER PROMPT:\n{template_filled}"
-                                    else:
-                                        prompt = template_filled
-                                    
-                                    # Call Gemini API directly (since this is custom logic)
-                                    response_stream = client.models.generate_content_stream(
-                                        model='gemini-2.5-flash',
-                                        contents=prompt
+                            if st.button(name, use_container_width=True, key=f"action_btn_{ptype}_{idx}"):
+                                # Store the action and text to process - use stored text from session state
+                                st.session_state.pending_action = {
+                                    'name': name,
+                                    'ptype': ptype,
+                                    'text': st.session_state.analysis_text
+                                }
+                                st.rerun()
+                    
+                    # Store response separately from action trigger
+                    if 'last_response' not in st.session_state:
+                        st.session_state.last_response = None
+                    
+                    # Process action ONLY when button is pressed (pending_action is set)
+                    if hasattr(st.session_state, 'pending_action') and st.session_state.pending_action:
+                        action_data = st.session_state.pending_action
+                        name = action_data['name']
+                        ptype = action_data['ptype']
+                        analysis_text = action_data['text']
+                        
+                        st.markdown("---")
+                        
+                        # Collapsible response section
+                        with st.expander(f"🤖 **{name}**", expanded=True):
+                            with st.spinner(f"Generating {name}..."):
+                                try:
+                                    final_prompt, response_stream = get_gemini_explanation_stream(
+                                        client, 
+                                        analysis_text,
+                                        ptype
                                     )
                                     
-                                # --- BUILT-IN ACTION LOGIC ---
-                                else:
-                                    # Use the existing function for built-in actions 
-                                    # Assuming get_gemini_explanation_stream is defined elsewhere
-                                    response_stream = get_gemini_explanation_stream(client, analysis_text, ptype)
-
-                                # --- STREAMING RESPONSE & HISTORY SAVE ---
-                                if response_stream:
+                                    # Full-width response container
                                     placeholder = st.empty()
                                     full_response = ""
                                     
                                     for chunk in response_stream:
                                         if hasattr(chunk, 'text'):
                                             full_response += chunk.text
-                                            placeholder.markdown(f"<div class='ai-explanation'><strong>{name}:</strong><br><br>{full_response}</div>", unsafe_allow_html=True)
+                                            placeholder.markdown(f"<div class='ai-explanation'>{full_response}</div>", unsafe_allow_html=True)
+                                    
+                                    # Store response for persistence across reruns
+                                    st.session_state.last_response = {
+                                        'name': name,
+                                        'content': full_response
+                                    }
                                     
                                     # Save to history
-                                    # Use the button name for both prompt_type and question for Quick Actions/Custom Prompts
-                                    # Assuming save_to_history is defined elsewhere
                                     save_to_history(
                                         st.session_state.username,
                                         st.session_state.current_book,
                                         st.session_state.current_page,
                                         name, name, full_response, 
-                                        selected_text.strip()
+                                        analysis_text
                                     )
-                                    st.success("Saved to history!")
+                                    
+                                    st.success("✓ Saved to history!")
+                                    
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                        
+                        # Clear action trigger after processing
+                        st.session_state.pending_action = None
                     
+                    # Display last response if it exists (persists across reruns)
+                    elif st.session_state.last_response:
+                        st.markdown("---")
+                        with st.expander(f"🤖 **{st.session_state.last_response['name']}**", expanded=True):
+                            st.markdown(f"<div class='ai-explanation'>{st.session_state.last_response['content']}</div>", unsafe_allow_html=True)
+                    
+                    # --- CUSTOM QUESTION SECTION ---
                     st.markdown("---")
-                    st.markdown("**Custom Question (Manual):**")
+                    st.markdown("**Ask a Custom Question:**")
                     
-                    custom_q = st.text_input("Ask anything about this text:", key="custom_q")
+                    col_q1, col_q2 = st.columns([5, 1])
+                    with col_q1:
+                        custom_q = st.text_input(
+                            "Your question:",
+                            key="custom_question_input",
+                            placeholder="Type your question about the text...",
+                            label_visibility="collapsed"
+                        )
+                    with col_q2:
+                        ask_btn = st.button("Ask", disabled=not custom_q, use_container_width=True, type="primary")
                     
-                    if st.button("Get Answer", disabled=not custom_q, use_container_width=True):
-                        try:
-                            analysis_text = selected_text.strip()
-                            if use_full_context and st.session_state.context_text:
-                                prompt = f"CONTEXT:\n{st.session_state.context_text}\n\nFOCUS:\n{analysis_text}\n\nQUESTION: {custom_q}\n\nAnswer:"
-                            else:
-                                prompt = f"Text: '{analysis_text}'\n\nQuestion: {custom_q}\n\nAnswer:"
-                            
-                            response_stream = client.models.generate_content_stream(
-                                model='gemini-2.5-flash',
-                                contents=prompt
-                            )
-                            
-                            placeholder = st.empty()
-                            full_response = ""
-                            
-                            for chunk in response_stream:
-                                if hasattr(chunk, 'text'):
-                                    full_response += chunk.text
-                                    placeholder.markdown(f"<div class='ai-explanation'><strong>Answer:</strong><br><br>{full_response}</div>", unsafe_allow_html=True)
-                            
-                            # Save to history for the manual question
-                            save_to_history(
-                                st.session_state.username,
-                                st.session_state.current_book,
-                                st.session_state.current_page,
-                                "Custom Question",
-                                custom_q, full_response,
-                                selected_text.strip()
-                            )
-                            st.success("Saved to history!")
-                        except Exception as e:
-                            st.error(f"Error: {e}")
+                    # Process custom question OUTSIDE the columns for full-width response
+                    if ask_btn and custom_q:
+                        st.markdown("---")
+                        
+                        # Collapsible custom question response
+                        with st.expander(f"💬 **Q: {custom_q}**", expanded=True):
+                           with st.spinner("Generating answer..."):
+                                try:
+                                    # Use stored text from session state
+                                    analysis_text = st.session_state.analysis_text
+                                    prompt = f"Text: '{analysis_text}'\n\nQuestion: {custom_q}\n\nAnswer:"
+                                    
+                                    response_stream = client.models.generate_content_stream(
+                                        model='gemini-2.5-flash',
+                                        contents=prompt
+                                    )
+                                    
+                                    # Full-width response container
+                                    placeholder = st.empty()
+                                    full_response = ""
+                                    
+                                    for chunk in response_stream:
+                                        if hasattr(chunk, 'text'):
+                                            full_response += chunk.text
+                                            placeholder.markdown(f"<div class='ai-explanation'>{full_response}</div>", unsafe_allow_html=True)
+                                    
+                                    # Save to history
+                                    save_to_history(
+                                        st.session_state.username,
+                                        st.session_state.current_book,
+                                        st.session_state.current_page,
+                                        "Custom Question",
+                                        custom_q, full_response,
+                                        st.session_state.analysis_text  # Use stored text
+                                    )
+                                    
+                                    st.success("✓ Saved to history!")
+                                    
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
 
     # --- BOOKMARKS MODE ---
     elif st.session_state.view_mode == "bookmarks":
@@ -1733,4 +1789,4 @@ else:
             st.info("No history yet. Start analyzing text to build your history!")
 
 st.markdown("---")
-st.markdown("<div style='text-align: center; color: #64748b; font-size: 0.9rem;'>Built with Gemini 2.5 Flash | Swipe to navigate on mobile</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; color: #64748b; font-size: 0.9rem;'>Built with Gemini 2.0 Flash | Swipe to navigate on mobile</div>", unsafe_allow_html=True)
