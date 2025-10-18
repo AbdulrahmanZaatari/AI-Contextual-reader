@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import threading
 import time
-
+from supabase import create_client, Client
 # --- INITIAL PAGE CONFIG ---
 st.set_page_config(
     page_title="AI Contextual Reader",
@@ -574,6 +574,34 @@ def is_bookmarked(username, book_name, page_number):
     conn.close()
     return result is not None
 
+def rename_book(username, sanitized_filename, new_display_name):
+    """Allows users to rename their books to Arabic or any character"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""UPDATE book_metadata 
+                 SET display_name = ? 
+                 WHERE username = ? AND original_filename = ?""",
+              (new_display_name, username, sanitized_filename))
+    conn.commit()
+    conn.close()
+
+def get_sanitized_filename(display_name):
+    """
+    Converts Arabic/Unicode filenames to safe identifiers.
+    Returns a hash-based filename that's Supabase-compatible.
+    Example: "نور" → "file_a3f2e8.pdf"
+    """
+    import hashlib
+    hash_suffix = hashlib.md5(display_name.encode('utf-8')).hexdigest()[:6]
+    return f"file_{hash_suffix}.pdf"
+
+def get_file_mapping_key(username, display_name):
+    """
+    Creates a unique key for tracking original display names.
+    Stored in book_metadata to map sanitized names back to display names.
+    """
+    return f"{username}_{display_name}"
+
 def save_custom_prompt(username, name, template):
     """Saves a new custom prompt to the database."""
     conn = get_db_connection()
@@ -677,13 +705,22 @@ def get_last_page(username, filename):
     return result[0] if result else 0
 
 def get_all_book_names(username):
-    user_dir = get_user_books_dir(username)
-    books = []
-    for f in sorted(user_dir.glob("*.pdf")):
-        display_name = get_display_name(username, f.name)
-        books.append((f.name, display_name))
-    return books
-
+    """Fetch all books from Supabase for a user"""
+    if not supabase:
+        return []
+    
+    try:
+        files = supabase.storage.from_("ai-reader-pdfs").list(username)
+        books = []
+        for f in sorted(files, key=lambda x: x["name"]):
+            if f["name"].endswith('.pdf'):
+                display_name = get_display_name(username, f["name"])
+                books.append((f["name"], display_name))
+        return books
+    except Exception as e:
+        print(f"Error fetching books from Supabase: {e}")
+        return []
+    
 # --- HISTORY MANAGEMENT ---
 def save_to_history(username, book_name, page_number, prompt_type, question, answer, text_snippet=""):
     conn = sqlite3.connect(DB_PATH)
@@ -771,6 +808,19 @@ except KeyError:
 except Exception as e:
     st.error(f"Error: {e}")
     st.stop()
+
+# --- SUPABASE SETUP ---
+@st.cache_resource
+def init_supabase():
+    try:
+        url = st.secrets["supabase_url"]
+        key = st.secrets["supabase_key"]
+        return create_client(url, key)
+    except Exception as e:
+        st.error(f"Supabase error: {e}")
+        return None
+
+supabase: Client = init_supabase()
 
 # --- HELPER FUNCTIONS ---
 def pdf_page_to_image(pdf_path, page_number):
@@ -870,16 +920,16 @@ def get_gemini_explanation_stream(client, text_snippet, prompt_value="explain"):
     static keys and custom prompt IDs.
     """
     
-    # 1. Static Prompt Templates (WITHOUT text_snippet injected yet)
+    # 1. Static Prompt Templates
     prompt_templates = {
-        "translate": "Translate to English and explain.\n\nText: {text}",
-        "explain": "Analyze and explain clearly.\n\nText: {text}",
-        "eli5": "Explain simply (ELI5).\n\nText: {text}",
-        "historical": "Historical and cultural context.\n\nText: {text}",
-        "summary": "Brief summary.\n\nText: {text}",
-        "compare": "Compare and contrast themes.\n\nText: {text}",
-        "themes": "Extract main themes.\n\nText: {text}",
-        "cite": "Citation-worthy insights.\n\nText: {text}"
+        "translate": f"Translate to English and explain.\n\nText: {text_snippet}",
+        "explain": f"Analyze and explain clearly.\n\nText: {text_snippet}",
+        "eli5": f"Explain simply (ELI5).\n\nText: {text_snippet}",
+        "historical": f"Historical and cultural context.\n\nText: {text_snippet}",
+        "summary": f"Brief summary.\n\nText: {text_snippet}",
+        "compare": f"Compare and contrast themes.\n\nText: {text_snippet}",
+        "themes": f"Extract main themes.\n\nText: {text_snippet}",
+        "cite": f"Citation-worthy insights.\n\nText: {text_snippet}"
     }
     
     prompt = None
@@ -898,23 +948,16 @@ def get_gemini_explanation_stream(client, text_snippet, prompt_value="explain"):
             if result:
                 # Inject the text snippet into the custom template using the placeholder
                 prompt_template = result[0]
-                
-                # Check if placeholder exists, if not, append the text
-                if "{{text_snippet}}" in prompt_template:
-                    prompt = prompt_template.replace("{{text_snippet}}", text_snippet).strip()
-                else:
-                    # If user forgot placeholder, append text automatically
-                    prompt = f"{prompt_template}\n\nالنص:\n{text_snippet}".strip()
+                prompt = prompt_template.replace("{{text_snippet}}", text_snippet).strip()
                 
         except Exception as e:
             # Fallback for corrupted custom ID
             print(f"Error retrieving custom prompt: {e}")
-            prompt = prompt_templates["explain"].format(text=text_snippet)
+            prompt = prompt_templates["explain"]
             
     # B. Handle Static Prompts (Key is "explain", "eli5", etc.)
     elif prompt_value in prompt_templates:
-        # NOW inject the text_snippet into the template
-        prompt = prompt_templates[prompt_value].format(text=text_snippet)
+        prompt = prompt_templates[prompt_value]
         
     # C. Handle Custom Question (The actual question text)
     else:
@@ -923,7 +966,7 @@ def get_gemini_explanation_stream(client, text_snippet, prompt_value="explain"):
         
     # Final check: Fallback if everything fails
     if not prompt:
-        prompt = prompt_templates["explain"].format(text=text_snippet)
+        prompt = prompt_templates["explain"]
     
     try:
         response = client.models.generate_content_stream(
@@ -1143,15 +1186,33 @@ with st.sidebar:
 
     uploaded_file = st.file_uploader("Upload", type="pdf")
     if uploaded_file:
-        file_path = user_dir / uploaded_file.name
-        if not file_path.exists():
-            with st.spinner("Saving..."):
-                file_path.write_bytes(uploaded_file.getvalue())
-                set_display_name(st.session_state.username, uploaded_file.name, uploaded_file.name)
-            st.success("Added!")
-            st.rerun()
+        if not supabase:
+            st.error("Supabase not initialized")
         else:
-            st.info("Already exists")
+            # Sanitize filename for Supabase
+            sanitized_filename = get_sanitized_filename(uploaded_file.name)
+            supabase_path = f"{st.session_state.username}/{sanitized_filename}"
+            
+            # Check if already exists
+            try:
+                files = supabase.storage.from_("ai-reader-pdfs").list(st.session_state.username)
+                file_exists = any(f["name"] == sanitized_filename for f in files)
+                
+                if file_exists:
+                    st.info("File already uploaded")
+                else:
+                    with st.spinner("Uploading to Supabase..."):
+                        supabase.storage.from_("ai-reader-pdfs").upload(
+                            supabase_path,
+                            uploaded_file.getvalue(),
+                            {"content-type": "application/pdf"}
+                        )
+                        # Store with display name (original filename)
+                        set_display_name(st.session_state.username, sanitized_filename, uploaded_file.name)
+                        st.success("Uploaded to cloud!")
+                        st.rerun()
+            except Exception as e:
+                st.error(f"Upload error: {e}")
 
     st.markdown("---")
 
@@ -1162,40 +1223,76 @@ with st.sidebar:
         book_options = [display_name for _, display_name in books]
         selected_display = st.selectbox("Select:", book_options)
         
-        selected_book = next(filename for filename, display in books if display == selected_display)
+        selected_book = next((filename for filename, display in books if display == selected_display), None)
         
-        if selected_book != st.session_state.current_book:
-            st.session_state.current_book = selected_book
-            last_page = get_last_page(st.session_state.username, selected_book)
-            st.session_state.current_page = last_page
-            st.session_state.page_image = None
-            st.session_state.multi_page_mode = False
-            st.session_state.selected_pages = []
-            st.session_state.context_text = ""
-            st.session_state.multi_page_images = []
-            st.session_state.pdf_doc = None
-            st.rerun()
-        
-        with st.expander("Rename"):
-            current_name = get_display_name(st.session_state.username, selected_book)
-            new_name = st.text_input("Name:", value=current_name, key="rename_input")
-            if st.button("Save", use_container_width=True):
-                if new_name and new_name != current_name:
-                    set_display_name(st.session_state.username, selected_book, new_name)
-                    st.success("Updated!")
-                    st.rerun()
+        if selected_book and selected_book != st.session_state.current_book:
+            # Download from Supabase using sanitized filename
+            supabase_path = f"{st.session_state.username}/{selected_book}"
+            local_cache_path = user_dir / selected_book
+            
+            if not local_cache_path.exists():
+                with st.spinner("Downloading from cloud..."):
+                    try:
+                        # Download file
+                        file_data = supabase.storage.from_("ai-reader-pdfs").download(supabase_path)
+                        local_cache_path.write_bytes(file_data)
+                        st.success("Downloaded!")
+                    except Exception as e:
+                        st.error(f"Download failed: {e}")
+                        local_cache_path = None
+            
+            if local_cache_path and local_cache_path.exists():
+                st.session_state.current_book = selected_book
+                last_page = get_last_page(st.session_state.username, selected_book)
+                st.session_state.current_page = last_page
+                st.session_state.page_image = None
+                st.session_state.multi_page_mode = False
+                st.session_state.selected_pages = []
+                st.session_state.context_text = ""
+                st.session_state.multi_page_images = []
+                st.session_state.pdf_doc = None
+                st.rerun()
 
     st.markdown("---")
     st.header("Settings")
     
+    st.markdown("---")
+    
     if st.session_state.current_book:
-        st.markdown("---")
+        st.subheader("Book Settings")
+        
+        current_display_name = get_display_name(st.session_state.username, st.session_state.current_book)
+        
+        with st.expander("✏️ Rename Book"):
+            new_name = st.text_input(
+                "New name:",
+                value=current_display_name,
+                placeholder="Enter new name (supports Arabic)",
+                key=f"rename_input_{st.session_state.current_book}"
+            )
+            
+            col_r1, col_r2 = st.columns(2)
+            with col_r1:
+                if st.button("Save Name", use_container_width=True, key="rename_save"):
+                    if new_name.strip() and new_name != current_display_name:
+                        rename_book(st.session_state.username, st.session_state.current_book, new_name.strip())
+                        st.success(f"Renamed to: {new_name}")
+                        st.rerun()
+                    elif new_name == current_display_name:
+                        st.info("No changes made")
+                    else:
+                        st.warning("Name cannot be empty")
+            
+            with col_r2:
+                if st.button("Reset", use_container_width=True, key="rename_reset"):
+                    st.rerun()
+        
         
         st.subheader("Multi-Page")
         multi_page_enabled = st.checkbox(
             "Enable",
             value=st.session_state.multi_page_mode,
-            help="Max 4 pages"
+            help="Max 5 pages"
         )
         
         if multi_page_enabled != st.session_state.multi_page_mode:
@@ -1219,7 +1316,7 @@ with st.sidebar:
                 end_page = st.number_input(
                     "End:", 
                     min_value=start_page, 
-                    max_value=min(start_page + 3, st.session_state.total_pages),
+                    max_value=min(start_page + 4, st.session_state.total_pages),
                     value=min(start_page + 1, st.session_state.total_pages),
                     key="end_page_select"
                 )
@@ -1227,8 +1324,8 @@ with st.sidebar:
             if st.button("Load", use_container_width=True):
                 selected = list(range(start_page - 1, end_page))
                 if len(selected) > 5:
-                    st.warning("Max 4")
-                    selected = selected[:4]
+                    st.warning("Max 5")
+                    selected = selected[:5]
                 
                 st.session_state.selected_pages = selected
                 with st.spinner("Loading..."):
@@ -1385,33 +1482,37 @@ else:
         preload_adjacent_pages(book_path, st.session_state.current_page, st.session_state.total_pages, st.session_state.username, st.session_state.current_book)
 
         if st.session_state.page_image or (st.session_state.multi_page_mode and st.session_state.multi_page_images):
-            # Always create the two-column layout
-            col_pdf, col_analysis = st.columns([1, 1])
-            
-            with col_pdf:
-                if st.session_state.multi_page_mode and st.session_state.multi_page_images:
-                    st.subheader("Pages")
-                    st.markdown(f"<div class='context-badge'>{len(st.session_state.multi_page_images)} pages</div>", unsafe_allow_html=True)
-                    
-                    cols = st.columns(len(st.session_state.multi_page_images))
-                    for idx, (page_num, img) in enumerate(st.session_state.multi_page_images):
-                        with cols[idx]:
-                            st.markdown(f"<div class='page-number-label'>Page {page_num}</div>", unsafe_allow_html=True)
-                            st.image(img, use_container_width=True)
-                    
-                    if st.session_state.context_text:
-                        st.markdown("---")
-                        
-                        col_t1, col_t2 = st.columns([5, 1])
-                        with col_t2:
-                            with st.popover("📋 Copy Text", use_container_width=True, help="Click to view and copy the extracted text."):
-                                st.info("The text below is ready to copy! Use the native copy button on the code block.")
-                                st.code(st.session_state.context_text, language=None)
-                        
-                        with st.expander("📖 View Text", expanded=False):
-                            st.markdown(f"<div class='extracted-text-area'>{st.session_state.context_text}</div>", unsafe_allow_html=True)
+            if st.session_state.multi_page_mode and st.session_state.multi_page_images:
+                st.subheader("Pages")
+                st.markdown(f"<div class='context-badge'>{len(st.session_state.multi_page_images)} pages</div>", unsafe_allow_html=True)
                 
-                else:
+                cols = st.columns(len(st.session_state.multi_page_images))
+                for idx, (page_num, img) in enumerate(st.session_state.multi_page_images):
+                    with cols[idx]:
+                        st.markdown(f"<div class='page-number-label'>Page {page_num}</div>", unsafe_allow_html=True)
+                        st.image(img, use_container_width=True)
+                
+                if st.session_state.context_text:
+                    st.markdown("---")
+                    st.subheader("Extracted Text")
+                    
+                    col_t1, col_t2 = st.columns([5, 1])
+                    with col_t2:
+                        if st.button("📋 Copy All", use_container_width=True, key="copy_multi"):
+                            st.code(st.session_state.context_text, language=None)
+                            st.success("Ready to copy!")
+                    
+                    with st.expander("📖 View Text", expanded=False):
+                        st.markdown(f"<div class='extracted-text-area'>{st.session_state.context_text}</div>", unsafe_allow_html=True)
+                
+                st.markdown("---")
+                st.subheader("AI Analysis")
+                st.info(f"Analyzing {len(st.session_state.selected_pages)} pages")
+                
+            else:
+                col_pdf, col_analysis = st.columns([1, 1])
+                
+                with col_pdf:
                     st.subheader("Page")
                     st.image(st.session_state.page_image, use_container_width=True)
                     
@@ -1438,9 +1539,6 @@ else:
             
             with col_analysis:
                 st.subheader("Analysis")
-                # Show context info for multi-page mode
-                if st.session_state.multi_page_mode and st.session_state.selected_pages:
-                    st.info(f"📄 Analyzing {len(st.session_state.selected_pages)} pages")
                 
                 # --- CUSTOM PROMPT MANAGER ---
                 if st.button("🔧 Manage Custom Prompts", use_container_width=True, key="manage_prompts_btn"):
@@ -1497,130 +1595,68 @@ else:
                     st.markdown("---")
                 
                 # --- TEXT INPUT SECTION ---
-                # Initialize analysis_text if it doesn't exist
-                if 'analysis_text' not in st.session_state:
-                    st.session_state.analysis_text = ""
-                
                 selected_text = st.text_area(
                     "Paste text to analyze:",
                     height=120,
                     placeholder="Paste your text here...",
-                    key="user_text_input",
-                    value=st.session_state.analysis_text  # Preserve the text across reruns
+                    key="user_text_input"
                 )
                 
-                # Update session state when textarea changes
-                if selected_text != st.session_state.analysis_text:
-                    st.session_state.analysis_text = selected_text.strip() if selected_text else ""
+                use_full_context = False
+                if st.session_state.multi_page_mode and st.session_state.context_text:
+                    use_full_context = st.checkbox("📄 Use all pages as context", value=True)
                 
                 # --- ANALYSIS ACTIONS ---
-                # Use the stored text from session state
-                if st.session_state.get('analysis_text'):
-                    # Initialize read more state if not exists
-                    if 'show_full_text' not in st.session_state:
-                        st.session_state.show_full_text = False
-                    
-                    # Yellow visual box with expand/collapse - showing preview with "Read More"
-                    text_preview_limit = 200  # Character limit for preview
-                    full_text = st.session_state.analysis_text
-                    
-                    # Collapsible container for selected text
-                    with st.expander("📝 **Selected Text**", expanded=True):
-                        if len(full_text) > text_preview_limit:
-                            # Long text - show preview or full based on state
-                            if st.session_state.show_full_text:
-                                st.markdown(f"<div class='selected-text-box'>{full_text}</div>", unsafe_allow_html=True)
-                                if st.button("📕 Show Less", key="show_less_btn"):
-                                    st.session_state.show_full_text = False
-                                    st.rerun()
-                            else:
-                                st.markdown(f"<div class='selected-text-box'>{full_text[:text_preview_limit]}...</div>", unsafe_allow_html=True)
-                                if st.button("📖 Read More", key="read_more_btn"):
-                                    st.session_state.show_full_text = True
-                                    st.rerun()
-                        else:
-                            # Short text - just show it
-                            st.markdown(f"<div class='selected-text-box'>{full_text}</div>", unsafe_allow_html=True)
+                if selected_text and selected_text.strip():
+                    st.markdown(f"**Selected text preview:** {selected_text.strip()[:100]}...")
                     
                     st.markdown("---")
                     st.markdown("**Quick Actions:**")
                     
                     # Get all available prompts
                     actions = get_all_prompts(st.session_state.username)
+                    custom_prompts_db = get_custom_prompts(st.session_state.username)
+                    custom_prompts_map = {f"custom_{id}": template for id, _, template in custom_prompts_db}
                     
-                    # Action buttons in columns
+                    # Action buttons
                     cols = st.columns(4)
                     for idx, (name, ptype) in enumerate(actions.items()):
                         with cols[idx % 4]:
                             if st.button(name, use_container_width=True, key=f"action_btn_{ptype}_{idx}"):
-                                # Store the action and text to process - use stored text from session state
-                                st.session_state.pending_action = {
-                                    'name': name,
-                                    'ptype': ptype,
-                                    'text': st.session_state.analysis_text
-                                }
-                                st.rerun()
-                    
-                    # Store response separately from action trigger
-                    if 'last_response' not in st.session_state:
-                        st.session_state.last_response = None
-                    
-                    # Process action ONLY when button is pressed (pending_action is set)
-                    if hasattr(st.session_state, 'pending_action') and st.session_state.pending_action:
-                        action_data = st.session_state.pending_action
-                        name = action_data['name']
-                        ptype = action_data['ptype']
-                        analysis_text = action_data['text']
-                        
-                        st.markdown("---")
-                        
-                        # Collapsible response section
-                        with st.expander(f"🤖 **{name}**", expanded=True):
-                            with st.spinner(f"Generating {name}..."):
-                                try:
-                                    final_prompt, response_stream = get_gemini_explanation_stream(
-                                        client, 
-                                        analysis_text,
-                                        ptype
-                                    )
-                                    
-                                    # Full-width response container
-                                    placeholder = st.empty()
-                                    full_response = ""
-                                    
-                                    for chunk in response_stream:
-                                        if hasattr(chunk, 'text'):
-                                            full_response += chunk.text
-                                            placeholder.markdown(f"<div class='ai-explanation'>{full_response}</div>", unsafe_allow_html=True)
-                                    
-                                    # Store response for persistence across reruns
-                                    st.session_state.last_response = {
-                                        'name': name,
-                                        'content': full_response
-                                    }
-                                    
-                                    # Save to history
-                                    save_to_history(
-                                        st.session_state.username,
-                                        st.session_state.current_book,
-                                        st.session_state.current_page,
-                                        name, name, full_response, 
-                                        analysis_text
-                                    )
-                                    
-                                    st.success("✓ Saved to history!")
-                                    
-                                except Exception as e:
-                                    st.error(f"Error: {e}")
-                        
-                        # Clear action trigger after processing
-                        st.session_state.pending_action = None
-                    
-                    # Display last response if it exists (persists across reruns)
-                    elif st.session_state.last_response:
-                        st.markdown("---")
-                        with st.expander(f"🤖 **{st.session_state.last_response['name']}**", expanded=True):
-                            st.markdown(f"<div class='ai-explanation'>{st.session_state.last_response['content']}</div>", unsafe_allow_html=True)
+                                # Trigger analysis
+                                with st.spinner(f"Generating {name}..."):
+                                    try:
+                                        final_prompt, response_stream = get_gemini_explanation_stream(
+                                            client, 
+                                            selected_text.strip(), 
+                                            ptype
+                                        )
+                                        
+                                        # Create response container
+                                        st.markdown("---")
+                                        st.markdown(f"### 🤖 {name}")
+                                        
+                                        placeholder = st.empty()
+                                        full_response = ""
+                                        
+                                        for chunk in response_stream:
+                                            if hasattr(chunk, 'text'):
+                                                full_response += chunk.text
+                                                placeholder.markdown(f"<div class='ai-explanation'>{full_response}</div>", unsafe_allow_html=True)
+                                        
+                                        # Save to history
+                                        save_to_history(
+                                            st.session_state.username,
+                                            st.session_state.current_book,
+                                            st.session_state.current_page,
+                                            name, name, full_response, 
+                                            selected_text.strip()
+                                        )
+                                        
+                                        st.success("✓ Saved to history!")
+                                        
+                                    except Exception as e:
+                                        st.error(f"Error: {e}")
                     
                     # --- CUSTOM QUESTION SECTION ---
                     st.markdown("---")
@@ -1637,46 +1673,46 @@ else:
                     with col_q2:
                         ask_btn = st.button("Ask", disabled=not custom_q, use_container_width=True, type="primary")
                     
-                    # Process custom question OUTSIDE the columns for full-width response
                     if ask_btn and custom_q:
-                        st.markdown("---")
-                        
-                        # Collapsible custom question response
-                        with st.expander(f"💬 **Q: {custom_q}**", expanded=True):
-                           with st.spinner("Generating answer..."):
-                                try:
-                                    # Use stored text from session state
-                                    analysis_text = st.session_state.analysis_text
+                        with st.spinner("Generating answer..."):
+                            try:
+                                st.markdown("---")
+                                st.markdown(f"### 💬 Q: {custom_q}")
+                                
+                                # Build prompt with optional context
+                                analysis_text = selected_text.strip()
+                                if use_full_context and st.session_state.context_text:
+                                    prompt = f"CONTEXT:\n{st.session_state.context_text}\n\nFOCUS:\n{analysis_text}\n\nQUESTION: {custom_q}\n\nAnswer:"
+                                else:
                                     prompt = f"Text: '{analysis_text}'\n\nQuestion: {custom_q}\n\nAnswer:"
-                                    
-                                    response_stream = client.models.generate_content_stream(
-                                        model='gemini-2.5-flash',
-                                        contents=prompt
-                                    )
-                                    
-                                    # Full-width response container
-                                    placeholder = st.empty()
-                                    full_response = ""
-                                    
-                                    for chunk in response_stream:
-                                        if hasattr(chunk, 'text'):
-                                            full_response += chunk.text
-                                            placeholder.markdown(f"<div class='ai-explanation'>{full_response}</div>", unsafe_allow_html=True)
-                                    
-                                    # Save to history
-                                    save_to_history(
-                                        st.session_state.username,
-                                        st.session_state.current_book,
-                                        st.session_state.current_page,
-                                        "Custom Question",
-                                        custom_q, full_response,
-                                        st.session_state.analysis_text  # Use stored text
-                                    )
-                                    
-                                    st.success("✓ Saved to history!")
-                                    
-                                except Exception as e:
-                                    st.error(f"Error: {e}")
+                                
+                                response_stream = client.models.generate_content_stream(
+                                    model='gemini-2.5-flash',
+                                    contents=prompt
+                                )
+                                
+                                placeholder = st.empty()
+                                full_response = ""
+                                
+                                for chunk in response_stream:
+                                    if hasattr(chunk, 'text'):
+                                        full_response += chunk.text
+                                        placeholder.markdown(f"<div class='ai-explanation'>{full_response}</div>", unsafe_allow_html=True)
+                                
+                                # Save to history
+                                save_to_history(
+                                    st.session_state.username,
+                                    st.session_state.current_book,
+                                    st.session_state.current_page,
+                                    "Custom Question",
+                                    custom_q, full_response,
+                                    selected_text.strip()
+                                )
+                                
+                                st.success("✓ Saved to history!")
+                                
+                            except Exception as e:
+                                st.error(f"Error: {e}")
 
     # --- BOOKMARKS MODE ---
     elif st.session_state.view_mode == "bookmarks":
