@@ -1234,14 +1234,6 @@ with st.sidebar:
                 st.success(f"Pages: {pages_list}")
     
     st.markdown("---")
-    
-    if st.button("Refresh", use_container_width=True):
-        st.session_state.page_image = None
-        if st.session_state.multi_page_mode:
-            st.session_state.context_text = ""
-            st.session_state.multi_page_images = []
-            st.session_state.selected_pages = []
-        st.rerun()
 
 # --- MAIN CONTENT ---
 if not st.session_state.current_book:
