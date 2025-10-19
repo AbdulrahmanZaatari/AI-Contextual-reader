@@ -1,6 +1,5 @@
 # --- 1. IMPORTS AND CONFIGURATION ---
 import streamlit as st
-from streamlit_input_box import input_box
 from PIL import Image
 import fitz  # PyMuPDF
 from google import genai
