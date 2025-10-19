@@ -1,5 +1,6 @@
 # --- 1. IMPORTS AND CONFIGURATION ---
 import streamlit as st
+from streamlit_input_box import input_box
 from PIL import Image
 import fitz  # PyMuPDF
 from google import genai
@@ -1569,20 +1570,29 @@ else:
                     st.markdown("---")
                 
                 # --- TEXT INPUT SECTION ---
-                selected_text = st.text_area(
-                    "Paste text to analyze:",
-                    height=120,
-                    placeholder="Paste your text here...",
-                    key="user_text_input"
+                if 'selected_text' not in st.session_state:
+                    st.session_state.selected_text = ""
+
+                # Optional header instead of label
+                st.markdown("### Paste text to analyze:")
+
+                # --- Chat-style input ---
+                # Enter submits, Shift+Enter adds newline
+                text = st.chat_input(
+                    placeholder="Paste your text here..."
                 )
+
+                # Store the submission
+                if text:
+                    st.session_state.selected_text = text
                 
                 use_full_context = False
                 if st.session_state.multi_page_mode and st.session_state.context_text:
                     use_full_context = st.checkbox("📄 Use all pages as context", value=True)
                 
                 # --- ANALYSIS ACTIONS ---
-                if selected_text and selected_text.strip():
-                    st.markdown(f"**Selected text preview:** {selected_text.strip()[:100]}...")
+                if st.session_state.selected_text.strip():
+                    st.markdown(f"**Selected text preview:** {st.session_state.selected_text.strip()[:100]}...")
                     
                     st.markdown("---")
                     st.markdown("**Quick Actions:**")
